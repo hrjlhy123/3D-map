@@ -12,7 +12,7 @@ const { pick } = pickPkg
 import streamArrayPkg from "stream-json/streamers/StreamArray.js";
 const { streamArray } = streamArrayPkg
 
-import { geojsonToIndices } from "../algorithm/function/earcut.js";
+import { geojsonToIndices } from "../function/algorithm/earcut.js";
 
 const GEOJSON_PATH = "../data/gis_osm_buildings_a_free_1.geojson"
 const LIMIT = 50

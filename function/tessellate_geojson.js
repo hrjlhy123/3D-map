@@ -66,6 +66,12 @@ wss.on("connection", (ws) => {
                     return
                 }
                 if (i >= limit) {
+                    ws.send(
+                        JSON.stringify({
+                            type: "done"
+                        })
+                    )
+                    console.log(`Reached limit of ${limit}, done.`)
                     pipeline.destroy()
                     return
                 }
@@ -145,58 +151,3 @@ wss.on("connection", (ws) => {
         }
     })
 })
-
-// const LIMIT_1 = 50
-// const LIMIT_2 = 5
-// const results = []
-
-// let i = 0
-
-// const pipeline = chain([
-//     fs.createReadStream(GEOJSON_PATH),
-//     parser(),
-//     pick({ filter: "features" }),
-//     streamArray(),
-// ])
-
-// pipeline.on("data", ({ value: feature }) => {
-//     if (i >= LIMIT_1) {
-//         pipeline.destroy();
-
-//         console.log("=== first 5 earcut results ===");
-//         console.dir(results, { depth: null });
-
-//         return results;
-//     }
-
-//     try {
-//         const parts = geojsonToIndices(feature)
-
-//         if (i < LIMIT_2) {
-//             results.push({
-//                 index: i,
-//                 name: feature.properties?.name ?? "(no name)",
-//                 type: feature.geometry?.type,
-//                 parts
-//             })
-//         }
-
-//         const verts = parts.reduce((s, p) => s + p.data.length / 2, 0)
-//         const tris = parts.reduce((s, p) => s + p.indices.length / 3, 0)
-
-//         console.log(
-//             `#${i + 1} ${feature.properties?.name ?? "(no name)"} | v=${verts} t=${tris}`
-//         )
-//     } catch (e) {
-//         console.error(`#${i} ERROR`, e.message)
-//     }
-
-//     i++
-// })
-//     .on("end", () => {
-//         console.log("done");
-//     })
-//     .on("error", (err) => {
-//         if (String(err?.code) === "ERR_STREAM_PREMATURE_CLOSE") return;
-//         console.error("Stream error:", err);
-//     })

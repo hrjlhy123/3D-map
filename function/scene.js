@@ -1,10 +1,7 @@
-// import { data } from "./tessellate_geojson.js";
-import { transform } from "./algorithm/transform.js";
 import { mat4, vec3 } from "../node_modules/gl-matrix/esm/index.js";
-// import { type } from "os";
 
 "use strict";
-let canvas
+let canvas, ready = false
 window.addEventListener(`DOMContentLoaded`, async () => {
     /* == Initialization == */
     let context, adapter, device, format_canvas, alphaMode, devicePixelRatio
@@ -56,7 +53,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
     /* == Data Preprocessing == */
     let GPUResources = {
-        data: null,
+        data: [],
         buffer: {},
         bindGroup: {},
         bindGroupLayout: {},
@@ -67,6 +64,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         renderPipeline: {}
     }
 
+    const SCALE = 100000.0;
     {
         {
             GPUResources.buffer.camera = device.createBuffer({
@@ -83,6 +81,42 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             })
         }
 
+        {
+            const lon0 = -122.29499816894531;
+            const lat0 = 47.575477600097656;
+
+            // 你 world 里用的那个
+            const invScale = 1.0 / SCALE;  // 0.00001
+
+            const baseX = lon0 * invScale;
+            const baseY = lat0 * invScale;
+
+            const d = invScale;
+
+            const debugPos = new Float32Array([
+                baseX - d, baseY - d, 0.0,
+                baseX + d, baseY - d, 0.0,
+                baseX, baseY + d, 0.0,
+            ]);
+
+            const debugNrm = new Float32Array([
+                0, 0, 1,
+                0, 0, 1,
+                0, 0, 1,
+            ])
+
+            GPUResources.buffer.debugPos = device.createBuffer({
+                size: debugPos.byteLength,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            })
+            device.queue.writeBuffer(GPUResources.buffer.debugPos, 0, debugPos)
+
+            GPUResources.buffer.debugNrm = device.createBuffer({
+                size: debugNrm.byteLength,
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            })
+            device.queue.writeBuffer(GPUResources.buffer.debugNrm, 0, debugNrm)
+        }
         {
             GPUResources.bindGroupLayout.global = device.createBindGroupLayout({
                 entries: [
@@ -113,20 +147,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                         binding: 0,
                         visibility: GPUShaderStage.VERTEX,
                         buffer: { type: `uniform` }
-                    }
-                ]
-            })
-            GPUResources.bindGroupLayout.composite = device.createBindGroupLayout({
-                entries: [
-                    {
-                        binding: 0,
-                        visibility: GPUShaderStage.FRAGMENT,
-                        texture: {},
-                    },
-                    {
-                        binding: 1,
-                        visibility: GPUShaderStage.FRAGMENT,
-                        texture: {},
                     }
                 ]
             })
@@ -200,44 +220,153 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             const msg = JSON.parse(e.data)
             if (msg.type == "feature") {
                 log.textContent += `#${msg.index} ${msg.name}\n`
+                GPUResources.data.push(msg)
             } else {
+                if (msg.type == "done") {
+                    data_extrude()
+                    console.log(`GPUResources.data:`, GPUResources.data)
+                    data_deploy()
+                    ready = true
+                }
                 log.textContent += `[${msg.type}] ${msg.message ?? ""}\n`
             }
         }
 
         document.getElementById("startBtn").onclick = () => {
-            ws.send(JSON.stringify({ type: "start", limit: 50, sample: 5 }))
+            ws.send(JSON.stringify({ type: "start", limit: 50, sample: 50 }))
         }
 
         document.getElementById("stopBtn").onclick = () => {
             ws.send(JSON.stringify({ type: "stop" }))
         }
+        // Preprocess data (height)
+        const part_extrude = (part, height) => {
+            if (!Array.isArray(part.data) || part.data.length < 6) {
+                throw new Error(`part.data must contain at least 3 points (>= 6 numbers).`)
+            }
+            if (!Array.isArray(part.indices) || part.indices.length < 3) {
+                throw new Error(`part.indices must contain at least 1 triangle (>= 3 numbers).`)
+            }
+            const n = Math.floor(part.data.length / 2)
 
-        if (GPUResources.data) {
-            GPUResources.data.buildings.forEach((node) => {
-                node.parts.forEach((part) => {
+            // Normalize 2D vector (x, y). If too small, return (0, 0).
+            const norm2 = (x, y) => {
+                const len = Math.hypot(x, y)
+                if (len < 1e-12) return [0, 0]
+                return [x / len, y / len]
+            }
+
+            const positions = []
+            const normals = []
+            const indices = []
+
+            const vertex_push = (x, y, z, nx, ny, nz) => {
+                const index = positions.length / 3
+                positions.push(x, y, z)
+                normals.push(nx, ny, nz)
+                return index
+            }
+
+            // ROOF vertices (shared)
+            const roofBase = 0
+            for (let i = 0; i < n; i++) {
+                const x = part.data[i * 2 + 0]
+                const y = part.data[i * 2 + 1]
+                vertex_push(x, y, height, 0, 0, 1)
+            }
+
+            // GROUND vertices (shared, optional)
+            const groundBase = positions.length / 3
+            for (let i = 0; i < n; i++) {
+                const x = part.data[i * 2 + 0]
+                const y = part.data[i * 2 + 1]
+                vertex_push(x, y, 0, 0, 0, -1)
+            }
+
+            // ROOF indices
+            for (let k = 0; k < part.indices.length; k += 3) {
+                indices.push(
+                    roofBase + part.indices[k + 0],
+                    roofBase + part.indices[k + 1],
+                    roofBase + part.indices[k + 2]
+                )
+            }
+
+            // GROUND indices
+            for (let k = 0; k < part.indices.length; k += 3) {
+                const a = groundBase + part.indices[k + 0]
+                const b = groundBase + part.indices[k + 1]
+                const c = groundBase + part.indices[k + 2]
+                indices.push(a, c, b)
+            }
+
+            // WALLS (outer ring only)
+            for (let i = 0; i < n; i++) {
+                const j = (i + 1) % n
+                const xi = part.data[i * 2 + 0]
+                const yi = part.data[i * 2 + 1]
+                const xj = part.data[j * 2 + 0]
+                const yj = part.data[j * 2 + 1]
+
+                const dx = xj - xi
+                const dy = yj - yi
+                // Because OUTER ring is CCW, outward normal for an edge (dx, dy) is (dy, -dx).
+                const [nx, ny] = norm2(dy, -dx)
+
+                const bi = vertex_push(xi, yi, 0, nx, ny, 0)
+                const bj = vertex_push(xj, yj, 0, nx, ny, 0)
+                const tj = vertex_push(xj, yj, height, nx, ny, 0)
+                const ti = vertex_push(xi, yi, height, nx, ny, 0)
+
+                indices.push(bi, bj, tj)
+                indices.push(bi, tj, ti)
+            }
+
+            return {
+                positions: new Float32Array(positions),
+                normals: new Float32Array(normals),
+                indices: new Uint32Array(indices),
+                meta: {
+                    vertexCount: positions.length / 3,
+                    triangleCount: indices.length / 3,
+                    height
+                }
+            }
+        }
+
+        const data_extrude = () => {
+            GPUResources.data = GPUResources.data.map(building => ({
+                ...building,
+                parts: building.parts.map(part => part_extrude(part, 15))
+            }))
+        }
+
+        // Deploy data
+        const data_deploy = () => {
+            GPUResources.data.forEach((building) => {
+                building.parts.forEach((part) => {
                     let temp_data = {}
                     part.buffer = {}
 
-                    temp_data.vertex = new Float32Array(part.data)
+                    temp_data.vertex = part.positions
                     part.buffer.vertex = device.createBuffer({
-                        label: `Vertex Buffer for ${node.name}`,
+                        label: `Vertex Buffer for ${building.name}`,
                         size: temp_data.vertex.byteLength,
                         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
                     })
                     device.queue.writeBuffer(part.buffer.vertex, 0, temp_data.vertex)
 
-                    temp_data.normal = new Float32Array(temp_data.vertex.length)
+                    temp_data.normal = part.normals
                     part.buffer.normal = device.createBuffer({
-                        label: `Normal Buffer for ${node.name}`,
+                        label: `Normal Buffer for ${building.name}`,
                         size: temp_data.normal.byteLength,
                         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
                     })
                     device.queue.writeBuffer(part.buffer.normal, 0, temp_data.normal)
 
-                    temp_data.indices = new Uint32Array(part.indices)
+                    temp_data.indices = part.indices
                     part.buffer.index = device.createBuffer({
-                        label: `Index Buffer for ${node.name}`,
+                        label: `Index Buffer for ${building.name}`,
                         size: temp_data.indices.byteLength,
                         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
                     })
@@ -253,14 +382,14 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             {
                 fov = 30 * Math.PI / 180
                 aspect = canvas.width / canvas.height
-                near = 1
-                far = 1000
+                near = 0.00001;
+                far = 60000.0;
                 matrix.projection = mat4.create()
                 mat4.perspective(matrix.projection, fov, aspect, near, far)
             }
             let dist, eye, target, up
             {
-                dist = Math.max(GPUResources.data?.size ?? 0) * 2
+                dist = 200
                 console.log(`dist: ${dist}`)
                 eye = [0, 0, -dist]
                 target = [0, 0, 0]
@@ -271,8 +400,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             let center
             {
                 matrix.transform = mat4.create()
-                center = GPUResources.data?.center.map(value => -value) ?? [0, 0, 0]
-                mat4.translate(matrix.transform, matrix.transform, center)
+                const fallbackCenter = [-122.29499816894531, 47.575477600097656, 0]
+                center = fallbackCenter.map(v => -v)
+                // mat4.translate(matrix.transform, matrix.transform, center)
+                mat4.scale(matrix.transform, matrix.transform, [SCALE, SCALE, 1.0])
+                mat4.translate(matrix.transform, matrix.transform, center);
             }
             console.log(`eye: ${eye}, center: ${center}, dist: ${vec3.distance(eye, center)}, near: ${near}`)
 
@@ -289,8 +421,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         path: {
             vertex: `./shader/vertex.wgsl`,
             fragment: `./shader/fragment.wgsl`,
-            vertex2: `./shader/vertex2.wgsl`,
-            composite: `./shader/composite.wgsl`
         },
         module: {}
     }
@@ -304,18 +434,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         shader.module.fragment = device.createShaderModule({
             label: `Fragment Shader Module`,
             code: await fetch(shader.path.fragment)
-                .then(res => res.ok ? res.text() : ``)
-                .catch(() => ``),
-        })
-        shader.module.vertex2 = device.createShaderModule({
-            label: `Vertex Shader Module 2`,
-            code: await fetch(shader.path.vertex2)
-                .then(res => res.ok ? res.text() : ``)
-                .catch(() => ``),
-        })
-        shader.module.composite = device.createShaderModule({
-            label: `Composite Shader Module`,
-            code: await fetch(shader.path.composite)
                 .then(res => res.ok ? res.text() : ``)
                 .catch(() => ``),
         })
@@ -352,7 +470,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         texture.depth = device.createTexture({
             size: [canvas.width, canvas.height],
             format: `depth24plus`,
-            sampleCount: 4,
+            sampleCount: 1,
             usage: GPUTextureUsage.RENDER_ATTACHMENT,
         })
         texture.alphaAccumulated = device.createTexture({
@@ -370,26 +488,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
     }
 
     {
-        GPUResources.bindGroup.composite = device.createBindGroup({
-            layout: GPUResources.bindGroupLayout.composite,
-            entries: [
-                {
-                    binding: 0,
-                    resource: texture.colorResolved.createView(),
-                },
-                {
-                    binding: 1,
-                    resource: texture.alphaResolved.createView(),
-                }
-            ]
-        })
-    }
-
-    {
         GPUResources.pipelineLayout = device.createPipelineLayout({
             bindGroupLayouts: [
                 GPUResources.bindGroupLayout.global,
-                GPUResources.bindGroupLayout.model,
             ]
         })
     }
@@ -408,67 +509,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             fragment: {
                 module: shader.module.fragment,
                 entryPoint: `fragmentMain`,
-                targets: [
-                    {
-                        format: format_canvas,
-                        blend: {
-                            color: {
-                                srcFactor: `one`,
-                                dstFactor: `zero`,
-                                operation: `add`,
-                            },
-                            alpha: {
-                                srcFactor: `one`,
-                                dstFactor: `one-minus-src-alpha`,
-                                operation: `add`,
-                            }
-                        }
-                    },
-                    {
-                        format: `rgba16float`,
-                        blend: {
-                            color: {
-                                srcFactor: `one`,
-                                dstFactor: `zero`,
-                                operation: `add`,
-                            },
-                            alpha: {
-                                srcFactor: `one`,
-                                dstFactor: `one-minus-src-alpha`,
-                                operation: `add`,
-                            }
-                        }
-                    }
-                ]
-            },
-            depthStencil: {
-                format: `depth24plus`,
-                depthWriteEnabled: false,
-                depthCompare: `less`,
+                targets: [{ format: format_canvas }]
             },
             multisample: {
-                count: 4,
+                count: 1
             },
-        })
-
-        GPUResources.renderPipeline.composite = device.createRenderPipeline({
-            layout: device.createPipelineLayout({
-                bindGroupLayouts: [GPUResources.bindGroupLayout.composite],
-            }),
-            vertex: {
-                module: shader.module.vertex2,
-                entryPoint: `vertexMain`,
-            },
-            fragment: {
-                module: shader.module.composite,
-                entryPoint: `compositeMain`,
-                targets: [{
-                    format: format_canvas,
-                }]
-            },
-            primitive: {
-                topology: `triangle-list`,
-            }
         })
     }
 
@@ -524,25 +569,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 requestAnimationFrame(step);
             }
         }
-
-        document.body.addEventListener('mousemove', (e) => {
-            if (lastX !== null) {
-                const dx = e.clientX - lastX;
-                pending += dx;
-
-                kick();
-            }
-            lastX = e.clientX;
-        });
-
-        document.body.addEventListener('mouseleave', () => {
-            lastX = null; // 防止回到页面时第一下跳变
-        });
-
-        window.addEventListener(`wheel`, (event) => {
-            deltaAngle -= event.deltaY * scrollSpeed
-            deltaAngle = Math.max(rangeAngle[0], Math.min(rangeAngle[1], deltaAngle))
-        })
     }
     const wheelResistance = () => {
         if (Math.abs(deltaAngle) < 0.01) {
@@ -555,36 +581,28 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
     /* == Render Loop == */
     const render = () => {
+        if (!ready) return
         let encoder, renderPass, compositePass
         encoder = device.createCommandEncoder()
+
         renderPass = encoder.beginRenderPass({
             colorAttachments: [
                 {
-                    view: texture.MSAA.createView(),
-                    resolveTarget: texture.colorResolved.createView(),
-                    loadOp: `clear`,
-                    clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
-                    storeOp: `store`,
-                },
-                {
-                    view: texture.alphaAccumulated.createView(),
-                    resolveTarget: texture.alphaResolved.createView(),
-                    loadOp: `clear`,
-                    clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 0.0 },
-                    storeOp: `store`,
+                    view: context.getCurrentTexture().createView(),
+                    loadOp: "clear",
+                    clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
+                    storeOp: "store",
                 }
             ],
-            depthStencilAttachment: {
-                view: texture.depth.createView(),
-                depthLoadOp: `clear`,
-                depthClearValue: 1.0,
-                depthStoreOp: `store`,
-            }
-        })
+        });
 
         renderPass.setPipeline(GPUResources.renderPipeline.model)
         renderPass.setBindGroup(0, GPUResources.bindGroup.global)
-        // renderPass.setBindGroup(1, GPUResources.bindGroup.model)
+
+        // debug triangle
+        renderPass.setVertexBuffer(0, GPUResources.buffer.debugPos)
+        renderPass.setVertexBuffer(1, GPUResources.buffer.debugNrm)
+        renderPass.draw(3, 1, 0, 0)
 
         matrix.identity = mat4.create()
         mat4.identity(matrix.identity)
@@ -598,34 +616,20 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world)
         }
 
-        for (const node of GPUResources.data.buildings) {
-            if (!node?.parts) continue
+        for (const building of GPUResources.data) {
+            if (!building?.parts) continue
 
-            for (const part of node.parts) {
+            for (const part of building.parts) {
                 if (!part?.buffer?.vertex || !part?.buffer?.normal || !part?.buffer?.index || !part?.indexCount) continue
                 renderPass.setVertexBuffer(0, part.buffer.vertex)
                 renderPass.setVertexBuffer(1, part.buffer.normal)
                 renderPass.setIndexBuffer(part.buffer.index, `uint32`)
                 renderPass.drawIndexed(part.indexCount, 1, 0, 0, 0)
-
             }
+            // console.log("[draw]", building.name)
         }
 
         renderPass.end()
-
-        compositePass = encoder.beginRenderPass({
-            colorAttachments: [{
-                view: context.getCurrentTexture().createView(),
-                loadOp: `clear`,
-                clearValue: { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
-                storeOp: `store`,
-            }]
-        })
-
-        compositePass.setPipeline(GPUResources.renderPipeline.composite)
-        compositePass.setBindGroup(0, GPUResources.bindGroup.composite)
-        compositePass.draw(6, 1, 0, 0)
-        compositePass.end()
 
         device.queue.submit([encoder.finish()])
     }
@@ -640,5 +644,5 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         render(deltaTime)
         requestAnimationFrame(frame)
     }
-    // frame()
+    frame()
 })

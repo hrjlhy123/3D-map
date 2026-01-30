@@ -1,0 +1,28 @@
+struct FSIn {
+    @location(0) nrm : vec3<f32>,
+};
+
+struct FSOut {
+    @location(0) color : vec4<f32>, // format_canvas
+    @location(1) accum : vec4<f32>, // rgba16float
+};
+
+@fragment
+fn fragmentMain(input: FSIn) -> FSOut {
+    var out: FSOut;
+
+    let N = normalize(input.nrm);
+    let L = normalize(vec3<f32>(0.4, 0.6, 0.7));
+    let ndl = max(dot(N, L), 0.0);
+
+    let base = vec3<f32>(0.20, 0.75, 0.35);
+    let col = base * (0.25 + 0.75 * ndl);
+
+    // out.color = vec4<f32>(col, 1.0);
+    out.color = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+
+    // out.accum = vec4<f32>(col, 1.0);
+    out.accum = out.color;
+
+    return out;
+}
