@@ -17,6 +17,39 @@ const { streamArray } = streamArrayPkg
 import { geojsonToIndices } from "./algorithm/earcut.js";
 // import { type } from "os";
 
+const bbox_intersect = (a, b) => {
+    return !(
+        a.maxLon < b.minLon ||
+        a.minLon > b.maxLon ||
+        a.maxLat < b.minLat ||
+        a.minLat > b.maxLat
+    )
+}
+
+const bbox_compute = (geometry) => {
+    let minLon = +Infinity, minLat = +Infinity
+    let maxLon = -Infinity, maxLat = -Infinity
+
+    const visit = ([lon, lat]) => {
+        if (lon < minLon) minLon = lon
+        if (lon > maxLon) maxLon = lon
+        if (lat < minLat) minLat = lat
+        if (lat > maxLat) maxLat = lat
+    }
+
+    if (geometry.type == `Polygon`) {
+        geometry.coordinates.forEach(ring => ring.forEach(visit))
+    } else if (geometry.type == `MultiPolygon`) {
+        geometry.coordinates.forEach(poly =>
+            poly.forEach(ring => ring.forEach(visit))
+        )
+    } else {
+        return null
+    }
+
+    return { minLon, minLat, maxLon, maxLat }
+}
+
 const GEOJSON_PATH = "../data/gis_osm_buildings_a_free_1.geojson"
 
 const server = http.createServer()
@@ -40,6 +73,8 @@ wss.on("connection", (ws) => {
             return
         }
 
+        let bbox
+
         if (msg.type === "start") {
             if (running) {
                 return
@@ -47,6 +82,7 @@ wss.on("connection", (ws) => {
 
             const limit = Number(msg.limit ?? 50)
             const sample = Number(msg.sample ?? 5) // 0 表示不限制推送内容大小
+            bbox = msg.bbox ?? null
             running = true
 
             ws.send(JSON.stringify({ type: "status", message: "started", limit }))
@@ -65,6 +101,7 @@ wss.on("connection", (ws) => {
                     pipeline.destroy()
                     return
                 }
+
                 if (i >= limit) {
                     ws.send(
                         JSON.stringify({
@@ -74,6 +111,13 @@ wss.on("connection", (ws) => {
                     console.log(`Reached limit of ${limit}, done.`)
                     pipeline.destroy()
                     return
+                }
+
+                if (bbox) {
+                    const fb = bbox_compute(feature.geometry)
+                    if (!fb || !bbox_intersect(fb, bbox)) {
+                        return
+                    }
                 }
 
                 try {

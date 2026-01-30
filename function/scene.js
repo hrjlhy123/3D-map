@@ -1,7 +1,11 @@
 import { mat4, vec3 } from "../node_modules/gl-matrix/esm/index.js";
 
 "use strict";
-let canvas, ready = false
+let canvas, ready = {
+    GPU: false,
+    stream: false,
+    buildings: false
+}
 window.addEventListener(`DOMContentLoaded`, async () => {
     /* == Initialization == */
     let context, adapter, device, format_canvas, alphaMode, devicePixelRatio
@@ -53,7 +57,10 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
     /* == Data Preprocessing == */
     let GPUResources = {
-        data: [],
+        data: {
+            pending: [],
+            rendering: [],
+        },
         buffer: {},
         bindGroup: {},
         bindGroupLayout: {},
@@ -85,7 +92,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             const lon0 = -122.29499816894531;
             const lat0 = 47.575477600097656;
 
-            // 你 world 里用的那个
             const invScale = 1.0 / SCALE;  // 0.00001
 
             const baseX = lon0 * invScale;
@@ -98,6 +104,12 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 baseX + d, baseY - d, 0.0,
                 baseX, baseY + d, 0.0,
             ]);
+
+            // const debugPos = new Float32Array([
+            //     lon0 - d, lat0 - d, 0,
+            //     lon0 + d, lat0 - d, 0,
+            //     lon0, lat0 + d, 0
+            // ]);
 
             const debugNrm = new Float32Array([
                 0, 0, 1,
@@ -209,31 +221,56 @@ window.addEventListener(`DOMContentLoaded`, async () => {
     }
 
     /* == Data Writing == */
-    let matrix = {}
+    let matrix = {}, data_deploy, stats = {
+        received: 0,
+        processed: 0,
+        lastIndex: -1,
+        errors: 0,
+    }, bbox = {
+        minLon: null,
+        minLat: null,
+        maxLon: null,
+        maxLat: null
+    };
     {
         /* === Model Data === */
         // fetch data (websocket)
         const ws = new WebSocket("ws://localhost:8080")
 
         ws.onopen = () => log.textContent += "connected\n"
+
         ws.onmessage = (e) => {
             const msg = JSON.parse(e.data)
-            if (msg.type == "feature") {
-                log.textContent += `#${msg.index} ${msg.name}\n`
-                GPUResources.data.push(msg)
-            } else {
-                if (msg.type == "done") {
-                    data_extrude()
-                    console.log(`GPUResources.data:`, GPUResources.data)
-                    data_deploy()
-                    ready = true
-                }
-                log.textContent += `[${msg.type}] ${msg.message ?? ""}\n`
+
+            if (msg.type == `feature`) {
+                // GPUResources.data.push(msg)
+                GPUResources.data.pending.push(msg)
+                stats.received++;
+                stats.lastIndex = msg.index ?? stats.lastIndex;
+                ready.stream = true
+                return
+            }
+
+            if (msg.type == `done`) {
+                console.log(`GPUResources.data.rendering:`, GPUResources.data.rendering)
+                console.log("Stream done", { received: stats.received, lastIndex: stats.lastIndex });
+                return
             }
         }
 
+        setInterval(() => {
+            console.log("[progress]", {
+                received: stats.received,
+                pending: GPUResources.data.pending.length,
+                rendering: GPUResources.data.rendering.length,
+                processed: stats.processed,
+                errors: stats.errors,
+                lastIndex: stats.lastIndex,
+            });
+        }, 1000);
+
         document.getElementById("startBtn").onclick = () => {
-            ws.send(JSON.stringify({ type: "start", limit: 50, sample: 50 }))
+            ws.send(JSON.stringify({ type: "start", bbox: bbox, limit: +1000000000, sample: +1000000000 }))
         }
 
         document.getElementById("stopBtn").onclick = () => {
@@ -334,46 +371,50 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             }
         }
 
-        const data_extrude = () => {
-            GPUResources.data = GPUResources.data.map(building => ({
-                ...building,
-                parts: building.parts.map(part => part_extrude(part, 15))
-            }))
-        }
-
         // Deploy data
-        const data_deploy = () => {
-            GPUResources.data.forEach((building) => {
-                building.parts.forEach((part) => {
-                    let temp_data = {}
+        data_deploy = (device, maxPerFrame = 100000) => {
+            for (let i = 0; i < maxPerFrame && GPUResources.data.pending.length; i++) {
+                const building = GPUResources.data.pending.shift()
+
+                // extrude
+                building.parts = building.parts.map(p => part_extrude(p, 15))
+
+                for (const part of building.parts) {
                     part.buffer = {}
 
-                    temp_data.vertex = part.positions
                     part.buffer.vertex = device.createBuffer({
                         label: `Vertex Buffer for ${building.name}`,
-                        size: temp_data.vertex.byteLength,
+                        size: part.positions.byteLength,
                         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
                     })
-                    device.queue.writeBuffer(part.buffer.vertex, 0, temp_data.vertex)
+                    device.queue.writeBuffer(part.buffer.vertex, 0, part.positions)
 
-                    temp_data.normal = part.normals
                     part.buffer.normal = device.createBuffer({
                         label: `Normal Buffer for ${building.name}`,
-                        size: temp_data.normal.byteLength,
+                        size: part.normals.byteLength,
                         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
                     })
-                    device.queue.writeBuffer(part.buffer.normal, 0, temp_data.normal)
+                    device.queue.writeBuffer(part.buffer.normal, 0, part.normals)
 
-                    temp_data.indices = part.indices
                     part.buffer.index = device.createBuffer({
                         label: `Index Buffer for ${building.name}`,
-                        size: temp_data.indices.byteLength,
+                        size: part.indices.byteLength,
                         usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
                     })
-                    device.queue.writeBuffer(part.buffer.index, 0, temp_data.indices)
-                    part.indexCount = temp_data.indices.length
-                })
-            })
+                    device.queue.writeBuffer(part.buffer.index, 0, part.indices)
+
+                    part.indexCount = part.indices.length
+                }
+
+                GPUResources.data.rendering.push(building)
+
+                if (!ready.buildings) {
+                    ready.buildings = true
+                    console.log(`Start rendering!`)
+                }
+
+                stats.processed++;
+            }
         }
 
         /* === Camera/Transform Data === */
@@ -389,7 +430,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             }
             let dist, eye, target, up
             {
-                dist = 200
+                dist = 20000
                 console.log(`dist: ${dist}`)
                 eye = [0, 0, -dist]
                 target = [0, 0, 0]
@@ -398,15 +439,39 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 mat4.lookAt(matrix.view, eye, target, up)
             }
             let center
+            const lon0 = -122.29499816894531;
+            const lat0 = 47.575477600097656;
             {
                 matrix.transform = mat4.create()
-                const fallbackCenter = [-122.29499816894531, 47.575477600097656, 0]
-                center = fallbackCenter.map(v => -v)
+                // const fallbackCenter = [-122.29499816894531, 47.575477600097656, 0]
+                // center = fallbackCenter.map(v => -v)
+                center = [-lon0, -lat0, 0.0]
                 // mat4.translate(matrix.transform, matrix.transform, center)
                 mat4.scale(matrix.transform, matrix.transform, [SCALE, SCALE, 1.0])
-                mat4.translate(matrix.transform, matrix.transform, center);
+                // mat4.translate(matrix.transform, matrix.transform, center);
+                mat4.translate(matrix.transform, matrix.transform, center)
             }
             console.log(`eye: ${eye}, center: ${center}, dist: ${vec3.distance(eye, center)}, near: ${near}`)
+
+            // Calculate the bbox
+            {
+                const halfHeightWorld = Math.tan(fov / 2) * dist
+                const halfWidthWorld = halfHeightWorld * aspect
+
+                const halfLon = halfWidthWorld / SCALE
+                const halfLat = halfHeightWorld / SCALE
+
+                const SAFETY = 1.0
+
+                bbox = {
+                    minLon: lon0 - halfLon * SAFETY,
+                    maxLon: lon0 + halfLon * SAFETY,
+                    minLat: lat0 - halfLat * SAFETY,
+                    maxLat: lat0 + halfLat * SAFETY,
+                }
+
+                console.log(`bbox:`, bbox)
+            }
 
             {
                 device.queue.writeBuffer(GPUResources.buffer.camera, 0, matrix.projection)
@@ -515,6 +580,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 count: 1
             },
         })
+
+        ready.GPU = true
     }
 
     // === Bind Mouse Control ===
@@ -581,8 +648,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
     /* == Render Loop == */
     const render = () => {
-        if (!ready) return
-        let encoder, renderPass, compositePass
+        if (!ready.GPU || !ready.buildings) return
+        let encoder, renderPass
         encoder = device.createCommandEncoder()
 
         renderPass = encoder.beginRenderPass({
@@ -616,7 +683,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world)
         }
 
-        for (const building of GPUResources.data) {
+        for (const building of GPUResources.data.rendering) {
             if (!building?.parts) continue
 
             for (const part of building.parts) {
@@ -640,8 +707,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
     frame = async (now) => {
         deltaTime = (now - lastTime) / 1000
         lastTime = now
+        data_deploy(device, 10)
+
         wheelResistance()
         render(deltaTime)
+
         requestAnimationFrame(frame)
     }
     frame()
