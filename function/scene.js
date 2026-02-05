@@ -259,14 +259,14 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         setInterval(() => {
-            console.log("[progress]", {
-                received: stats.received,
-                pending: GPUResources.data.pending.length,
-                rendering: GPUResources.data.rendering.length,
-                processed: stats.processed,
-                errors: stats.errors,
-                lastIndex: stats.lastIndex,
-            });
+            // console.log("[progress]", {
+            //     received: stats.received,
+            //     pending: GPUResources.data.pending.length,
+            //     rendering: GPUResources.data.rendering.length,
+            //     processed: stats.processed,
+            //     errors: stats.errors,
+            //     lastIndex: stats.lastIndex,
+            // });
         }, 1000);
 
         document.getElementById("startBtn").onclick = () => {
@@ -447,7 +447,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 // center = fallbackCenter.map(v => -v)
                 center = [-lon0, -lat0, 0.0]
                 // mat4.translate(matrix.transform, matrix.transform, center)
-                mat4.scale(matrix.transform, matrix.transform, [SCALE, SCALE, 1.0])
+                mat4.scale(matrix.transform, matrix.transform, [-SCALE, SCALE, 1.0])
                 // mat4.translate(matrix.transform, matrix.transform, center);
                 mat4.translate(matrix.transform, matrix.transform, center)
             }
@@ -584,67 +584,122 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         ready.GPU = true
     }
 
-    // === Bind Mouse Control ===
-    let yaw, deltaAngle, scrollSpeed, rangeAngle, rotateGlobal
-    let lastX = null;
-    deltaAngle = 0
-    scrollSpeed = 0.01
-    rangeAngle = [-10, 10]
-    {
-        yaw = 0
-        canvas.addEventListener(`mousemove`, (e) => {
-            if (e.buttons == 1) {
-                yaw += e.movementX * 0.005
-                // console.log(`yaw:`, yaw)
+    // ===== Simple Orbit Controller (yaw/pitch/zoom/pan) =====
+    // 左键拖动：yaw/pitch
+    // 中键(滚轮按下)拖动：平移（屏幕上下左右）
+    // 滚轮：缩放（zoom = 相机距离）
+    // Reset 按钮：恢复默认
+    (() => {
+        // -------- State --------
+        let yaw = 0;
+        let pitch = -0.25;
+        let zoom = 800;
+        let panX = 0, panY = 0;
+
+        // -------- Limits --------
+        const MIN_PITCH = -Math.PI / 2 + 0.05;
+        const MAX_PITCH = Math.PI / 2 - 0.05;
+        const MIN_ZOOM = -19300;
+        const MAX_ZOOM = 19300;
+
+        // ===== 你只需要主要调这 3 个 =====
+        const ROT_SENS = 0.005;   // 旋转灵敏度：越大越敏感
+        const PAN_SENS = 32;       // 平移灵敏度：越大平移越快（你现在快就继续减小）
+        const ZOOM_SENS = 16.0;  // 缩放灵敏度：越大缩放越快
+
+        // zoom 自适应缩放倍率（温和版，避免飞）
+        // zoom 小 = 更近（放大）=> scale 小（更慢）
+        // zoom 大 = 更远（缩小）=> scale 大（更快）
+        const ZOOM_REF = 800;
+        const SCALE_MIN = 0.15;
+        const SCALE_MAX = 2.0;
+
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+        // function zoomScale() {
+        //     // 线性比例，幅度限制在 [SCALE_MIN, SCALE_MAX]
+        //     console.log(`clamp(zoom / ZOOM_REF, SCALE_MIN, SCALE_MAX): ${clamp(zoom / ZOOM_REF, SCALE_MIN, SCALE_MAX)}`,
+        //         `\nzoom / ZOOM_REF: ${zoom / ZOOM_REF}`,
+        //         `\nSCALE_MIN: ${SCALE_MIN}`,
+        //         `\nSCALE_MAX: ${SCALE_MAX}`,)
+        //     return clamp(zoom / ZOOM_REF, SCALE_MIN, SCALE_MAX);
+        //     // return 1.0;
+        // }
+        function zoomScale() {
+            // 放大(zoom大) => scale小(更慢)
+            // 缩小(zoom小) => scale大(更快)
+            // console.log(`clamp(ZOOM_REF / (zoom + 19300), SCALE_MIN, SCALE_MAX): ${clamp(ZOOM_REF / (zoom + 19300), SCALE_MIN, SCALE_MAX)}`,
+            //     `\nZOOM_REF / (zoom + 19300): ${ZOOM_REF / (zoom + 19300)}`,
+            //     `\nSCALE_MIN: ${SCALE_MIN}`,
+            //     `\nSCALE_MAX: ${SCALE_MAX}`,)
+            console.log(`zoom:`, zoom)
+            let t = Math.max(0, Math.min(1,
+                (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)
+            ));
+            // return clamp(ZOOM_REF / (zoom + 19300), SCALE_MIN, SCALE_MAX);
+            // return ZOOM_REF / (zoom + 19301)
+            return 1.0 + (0.05 - 1.0) * t;
+        }
+
+        // -------- Events --------
+        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+        canvas.addEventListener("mousemove", (e) => {
+            if (e.buttons === 1) {
+                // 左键：旋转
+                yaw += e.movementX * ROT_SENS;
+                pitch -= e.movementY * ROT_SENS;
+                pitch = clamp(pitch, MIN_PITCH, MAX_PITCH);
+            } else if (e.buttons === 4) {
+                // 中键：平移（屏幕空间）
+                const s = zoomScale();                // 随 zoom 自动缩放速度
+                panX += -e.movementX * PAN_SENS * s;
+                panY += -e.movementY * PAN_SENS * s;  // 方向不对就把负号去掉或反过来
             }
-        })
+        });
 
-        // 把所有鼠标位移统一进队列，逐帧消化
-        let pending = 0;
-        let animating = false;
+        canvas.addEventListener("wheel", (e) => {
+            e.preventDefault();
+            zoom += e.deltaY * ZOOM_SENS;
 
-        const speed = 0.00035;   // 像素 → 弧度 的比例
-        const maxPerFrame = 75;  // 每帧最多消化多少像素（平滑关键参数）
-        const minYaw = 0;
-        const maxYaw = Math.PI / 6;
+            zoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
 
-        function clamp(v, lo, hi) {
-            return Math.max(lo, Math.min(hi, v));
+            console.log(`zoom:`, zoom,
+                `\ne.deltaY:`, e.deltaY,
+                `\nZOOM_SENS:`, ZOOM_SENS,
+            )
+        }, { passive: false });
+
+        // -------- Reset --------
+        const resetBtn = document.getElementById("resetCamBtn");
+        if (resetBtn) {
+            resetBtn.addEventListener("click", () => {
+                yaw = 0; pitch = -0.25; zoom = 800; panX = 0; panY = 0;
+            });
         }
 
-        function step() {
-            if (Math.abs(pending) < 0.01) { // 足够小就停
-                pending = 0;
-                animating = false;
-                return;
-            }
+        // -------- Apply to GPU --------
+        window.applyCameraToGPU = function applyCameraToGPU(mat4, GPUResources, device, matrix) {
+            const Tpan = mat4.create();
+            const Ry = mat4.create();
+            const Rx = mat4.create();
+            const Tzoom = mat4.create();
+            const m = mat4.create();
 
-            // 本帧拿一小口像素量来转
-            const take = Math.sign(pending) * Math.min(Math.abs(pending), maxPerFrame);
-            pending -= take;
+            mat4.fromTranslation(Tpan, [panX, panY, 0]);
+            mat4.fromYRotation(Ry, yaw);
+            mat4.fromXRotation(Rx, pitch);
+            mat4.fromTranslation(Tzoom, [0, 0, -zoom]); // 反了就改成 +zoom
 
-            // 方向：向右移动 → yaw 减小（你之前的反向规则）
-            yaw -= take * speed;
-            yaw = clamp(yaw, minYaw, maxYaw);
+            mat4.multiply(m, Tpan, Ry);
+            mat4.multiply(m, m, Rx);
+            mat4.multiply(m, m, Tzoom);
 
-            requestAnimationFrame(step);
-        }
-
-        function kick() {
-            if (!animating) {
-                animating = true;
-                requestAnimationFrame(step);
-            }
-        }
-    }
-    const wheelResistance = () => {
-        if (Math.abs(deltaAngle) < 0.01) {
-            deltaAngle = 0
-            return
-        }
-        deltaAngle *= 0.95  // 每帧逐渐衰减
-    }
-
+            matrix.world = mat4.create();
+            mat4.multiply(matrix.world, m, matrix.transform);
+            device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world);
+        };
+    })();
 
     /* == Render Loop == */
     const render = () => {
@@ -676,11 +731,12 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         // Mouse Control
         {
-            rotateGlobal = mat4.create()
-            mat4.fromYRotation(rotateGlobal, yaw)
-            matrix.world = mat4.create()
-            mat4.multiply(matrix.world, rotateGlobal, matrix.transform)
-            device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world)
+            // rotateGlobal = mat4.create()
+            // mat4.fromYRotation(rotateGlobal, yaw)
+            // matrix.world = mat4.create()
+            // mat4.multiply(matrix.world, rotateGlobal, matrix.transform)
+            // device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world)
+            applyCameraToGPU(mat4, GPUResources, device, matrix);
         }
 
         for (const building of GPUResources.data.rendering) {
@@ -709,7 +765,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         lastTime = now
         data_deploy(device, 10)
 
-        wheelResistance()
         render(deltaTime)
 
         requestAnimationFrame(frame)
