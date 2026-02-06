@@ -105,12 +105,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 baseX, baseY + d, 0.0,
             ]);
 
-            // const debugPos = new Float32Array([
-            //     lon0 - d, lat0 - d, 0,
-            //     lon0 + d, lat0 - d, 0,
-            //     lon0, lat0 + d, 0
-            // ]);
-
             const debugNrm = new Float32Array([
                 0, 0, 1,
                 0, 0, 1,
@@ -231,7 +225,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         minLat: null,
         maxLon: null,
         maxLat: null
-    };
+    }
     {
         /* === Model Data === */
         // fetch data (websocket)
@@ -259,14 +253,14 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         setInterval(() => {
-            // console.log("[progress]", {
-            //     received: stats.received,
-            //     pending: GPUResources.data.pending.length,
-            //     rendering: GPUResources.data.rendering.length,
-            //     processed: stats.processed,
-            //     errors: stats.errors,
-            //     lastIndex: stats.lastIndex,
-            // });
+            console.log("[progress]", {
+                received: stats.received,
+                pending: GPUResources.data.pending.length,
+                rendering: GPUResources.data.rendering.length,
+                processed: stats.processed,
+                errors: stats.errors,
+                lastIndex: stats.lastIndex,
+            });
         }, 1000);
 
         document.getElementById("startBtn").onclick = () => {
@@ -276,7 +270,49 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         document.getElementById("stopBtn").onclick = () => {
             ws.send(JSON.stringify({ type: "stop" }))
         }
-        // Preprocess data (height)
+        // Preprocess data
+        //// 2D building
+        //// only one layer (z = z0), no walls, no ground, no normals.
+        const part_flat = (part, z0 = 0) => {
+            if (!Array.isArray(part.data) || part.data.length < 6) {
+                throw new Error(`part.data must contain at least 3 points (>= 6 numbers).`)
+            }
+            if (!Array.isArray(part.indices) || part.indices.length < 3) {
+                throw new Error(`part.indices must contain at least 1 triangle (>= 3 numbers).`)
+            }
+
+            const n = Math.floor(part.data.length / 2)
+
+            const positions = new Float32Array(n * 3)
+            for (let i = 0; i < n; i++) {
+                positions[i * 3 + 0] = part.data[i * 2 + 0]
+                positions[i * 3 + 1] = part.data[i * 2 + 1]
+                positions[i * 3 + 2] = z0
+            }
+
+            const normals = new Float32Array(n * 3)
+            for (let i = 0; i < n; i++) {
+                normals[i * 3 + 0] = 0
+                normals[i * 3 + 1] = 0
+                normals[i * 3 + 2] = 1
+            }
+
+            // 直接复用 earcut 的三角形索引
+            const indices = new Uint32Array(part.indices)
+
+            return {
+                positions,
+                normals,
+                indices,
+                meta: {
+                    vertexCount: n,
+                    triangleCount: indices.length / 3,
+                    z0,
+                    mode: "flat",
+                }
+            }
+        }
+        //// 3D building
         const part_extrude = (part, height) => {
             if (!Array.isArray(part.data) || part.data.length < 6) {
                 throw new Error(`part.data must contain at least 3 points (>= 6 numbers).`)
@@ -372,12 +408,17 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         // Deploy data
+        let BUILDING_MODE = "flat";
         data_deploy = (device, maxPerFrame = 100000) => {
             for (let i = 0; i < maxPerFrame && GPUResources.data.pending.length; i++) {
                 const building = GPUResources.data.pending.shift()
 
-                // extrude
-                building.parts = building.parts.map(p => part_extrude(p, 15))
+                // flat/extrude
+                if (BUILDING_MODE === "flat") {
+                    building.parts = building.parts.map(p => part_flat(p, 0))
+                } else if (BUILDING_MODE === "extrude") {
+                    building.parts = building.parts.map(p => part_extrude(p, 15))
+                }
 
                 for (const part of building.parts) {
                     part.buffer = {}
@@ -443,12 +484,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             const lat0 = 47.575477600097656;
             {
                 matrix.transform = mat4.create()
-                // const fallbackCenter = [-122.29499816894531, 47.575477600097656, 0]
-                // center = fallbackCenter.map(v => -v)
                 center = [-lon0, -lat0, 0.0]
-                // mat4.translate(matrix.transform, matrix.transform, center)
                 mat4.scale(matrix.transform, matrix.transform, [-SCALE, SCALE, 1.0])
-                // mat4.translate(matrix.transform, matrix.transform, center);
                 mat4.translate(matrix.transform, matrix.transform, center)
             }
             console.log(`eye: ${eye}, center: ${center}, dist: ${vec3.distance(eye, center)}, near: ${near}`)
@@ -584,7 +621,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         ready.GPU = true
     }
 
-    // ===== Simple Orbit Controller (yaw/pitch/zoom/pan) =====
+    /* == Camera Controller == */
+    // (yaw/pitch/zoom/pan)
     // 左键拖动：yaw/pitch
     // 中键(滚轮按下)拖动：平移（屏幕上下左右）
     // 滚轮：缩放（zoom = 相机距离）
@@ -602,12 +640,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         const MIN_ZOOM = -19300;
         const MAX_ZOOM = 19300;
 
-        // ===== 你只需要主要调这 3 个 =====
         const ROT_SENS = 0.005;   // 旋转灵敏度：越大越敏感
         const PAN_SENS = 32;       // 平移灵敏度：越大平移越快（你现在快就继续减小）
         const ZOOM_SENS = 16.0;  // 缩放灵敏度：越大缩放越快
 
-        // zoom 自适应缩放倍率（温和版，避免飞）
+        // zoom 自适应缩放倍率
         // zoom 小 = 更近（放大）=> scale 小（更慢）
         // zoom 大 = 更远（缩小）=> scale 大（更快）
         const ZOOM_REF = 800;
@@ -616,28 +653,13 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-        // function zoomScale() {
-        //     // 线性比例，幅度限制在 [SCALE_MIN, SCALE_MAX]
-        //     console.log(`clamp(zoom / ZOOM_REF, SCALE_MIN, SCALE_MAX): ${clamp(zoom / ZOOM_REF, SCALE_MIN, SCALE_MAX)}`,
-        //         `\nzoom / ZOOM_REF: ${zoom / ZOOM_REF}`,
-        //         `\nSCALE_MIN: ${SCALE_MIN}`,
-        //         `\nSCALE_MAX: ${SCALE_MAX}`,)
-        //     return clamp(zoom / ZOOM_REF, SCALE_MIN, SCALE_MAX);
-        //     // return 1.0;
-        // }
         function zoomScale() {
             // 放大(zoom大) => scale小(更慢)
             // 缩小(zoom小) => scale大(更快)
-            // console.log(`clamp(ZOOM_REF / (zoom + 19300), SCALE_MIN, SCALE_MAX): ${clamp(ZOOM_REF / (zoom + 19300), SCALE_MIN, SCALE_MAX)}`,
-            //     `\nZOOM_REF / (zoom + 19300): ${ZOOM_REF / (zoom + 19300)}`,
-            //     `\nSCALE_MIN: ${SCALE_MIN}`,
-            //     `\nSCALE_MAX: ${SCALE_MAX}`,)
             console.log(`zoom:`, zoom)
             let t = Math.max(0, Math.min(1,
                 (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)
             ));
-            // return clamp(ZOOM_REF / (zoom + 19300), SCALE_MIN, SCALE_MAX);
-            // return ZOOM_REF / (zoom + 19301)
             return 1.0 + (0.05 - 1.0) * t;
         }
 
@@ -646,11 +668,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         canvas.addEventListener("mousemove", (e) => {
             if (e.buttons === 1) {
-                // 左键：旋转
-                yaw += e.movementX * ROT_SENS;
-                pitch -= e.movementY * ROT_SENS;
-                pitch = clamp(pitch, MIN_PITCH, MAX_PITCH);
-            } else if (e.buttons === 4) {
+                // // 左键：旋转
+                // yaw += e.movementX * ROT_SENS;
+                // pitch -= e.movementY * ROT_SENS;
+                // pitch = clamp(pitch, MIN_PITCH, MAX_PITCH);
+            } else if (e.buttons === 4 || e.buttons === 1) {
                 // 中键：平移（屏幕空间）
                 const s = zoomScale();                // 随 zoom 自动缩放速度
                 panX += -e.movementX * PAN_SENS * s;
@@ -679,7 +701,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         // -------- Apply to GPU --------
-        window.applyCameraToGPU = function applyCameraToGPU(mat4, GPUResources, device, matrix) {
+        window.camera = (mat4, GPUResources, device, matrix) => {
             const Tpan = mat4.create();
             const Ry = mat4.create();
             const Rx = mat4.create();
@@ -729,15 +751,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         matrix.identity = mat4.create()
         mat4.identity(matrix.identity)
 
-        // Mouse Control
-        {
-            // rotateGlobal = mat4.create()
-            // mat4.fromYRotation(rotateGlobal, yaw)
-            // matrix.world = mat4.create()
-            // mat4.multiply(matrix.world, rotateGlobal, matrix.transform)
-            // device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world)
-            applyCameraToGPU(mat4, GPUResources, device, matrix);
-        }
+        // Camera Control
+        camera(mat4, GPUResources, device, matrix);
 
         for (const building of GPUResources.data.rendering) {
             if (!building?.parts) continue
