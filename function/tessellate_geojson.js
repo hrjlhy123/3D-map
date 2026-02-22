@@ -23,7 +23,8 @@ const DATA_DIR = path.resolve(`../data`);
 // 1. Automatically locate all *_A_*.geojson files
 const AREA_FILES = fs
     .readdirSync(DATA_DIR)
-    .filter((f) => f.endsWith(`.geojson`) && f.includes(`_a_`))
+    // .filter((f) => f.endsWith(`.geojson`) && f.includes(`_a_`))
+    .filter((f) => f.endsWith(`.geojson`) && f.includes(`buildings_a_`))
     .map((f) => path.join(DATA_DIR, f))
 
 console.log(`AREA_FILES:`, AREA_FILES.map(p => path.basename(p)))

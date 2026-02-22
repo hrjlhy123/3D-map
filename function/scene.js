@@ -99,29 +99,17 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
             const d = invScale;
 
-            const debugPos = new Float32Array([
-                baseX - d, baseY - d, 0.0,
-                baseX + d, baseY - d, 0.0,
-                baseX, baseY + d, 0.0,
-            ]);
-
-            const debugNrm = new Float32Array([
-                0, 0, 1,
-                0, 0, 1,
-                0, 0, 1,
+            const debugPos_and_debugNrm = new Float32Array([
+                baseX - d, baseY - d, 0.0, 0, 0, 1,
+                baseX + d, baseY - d, 0.0, 0, 0, 1,
+                baseX, baseY + d, 0.0, 0, 0, 1,
             ])
 
-            GPUResources.buffer.debugPos = device.createBuffer({
-                size: debugPos.byteLength,
+            GPUResources.buffer.debugPos_and_debugNrm = device.createBuffer({
+                size: debugPos_and_debugNrm.byteLength,
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             })
-            device.queue.writeBuffer(GPUResources.buffer.debugPos, 0, debugPos)
-
-            GPUResources.buffer.debugNrm = device.createBuffer({
-                size: debugNrm.byteLength,
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            })
-            device.queue.writeBuffer(GPUResources.buffer.debugNrm, 0, debugNrm)
+            device.queue.writeBuffer(GPUResources.buffer.debugPos_and_debugNrm, 0, debugPos_and_debugNrm)
         }
         {
             GPUResources.bindGroupLayout.global = device.createBindGroupLayout({
@@ -191,21 +179,16 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         {
             GPUResources.bufferLayout.vertex.position = {
-                arrayStride: 12, // 3 x 4 bytes = 12 bytes
+                arrayStride: 24, // 3 x 4 x 2 bytes = 24 bytes
                 attributes: [
                     {
                         shaderLocation: 0,
                         offset: 0,
                         format: `float32x3`,
-                    }
-                ]
-            }
-            GPUResources.bufferLayout.vertex.normal = {
-                arrayStride: 12, // 3 x 4 bytes = 12 bytes
-                attributes: [
+                    },
                     {
                         shaderLocation: 1,
-                        offset: 0,
+                        offset: 12,
                         format: `float32x3`,
                     }
                 ]
@@ -237,7 +220,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             const msg = JSON.parse(e.data)
 
             if (msg.type == `feature`) {
-                // GPUResources.data.push(msg)
                 GPUResources.data.pending.push(msg)
                 stats.received++;
                 stats.lastIndex = msg.index ?? stats.lastIndex;
@@ -245,23 +227,12 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 return
             }
 
-            if (msg.type == `done`) {
+            if (msg.type == `done` || msg.type == `file_end`) {
                 console.log(`GPUResources.data.rendering:`, GPUResources.data.rendering)
                 console.log("Stream done", { received: stats.received, lastIndex: stats.lastIndex });
                 return
             }
         }
-
-        setInterval(() => {
-            console.log("[progress]", {
-                received: stats.received,
-                pending: GPUResources.data.pending.length,
-                rendering: GPUResources.data.rendering.length,
-                processed: stats.processed,
-                errors: stats.errors,
-                lastIndex: stats.lastIndex,
-            });
-        }, 1000);
 
         document.getElementById("startBtn").onclick = () => {
             ws.send(JSON.stringify({ type: "start", bbox: bbox, limit: +1000000000, sample: +1000000000 }))
@@ -269,6 +240,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         document.getElementById("stopBtn").onclick = () => {
             ws.send(JSON.stringify({ type: "stop" }))
+            PAUSE_RENDER = true
         }
         // Preprocess data
         //// 2D building
@@ -281,31 +253,27 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 throw new Error(`part.indices must contain at least 1 triangle (>= 3 numbers).`)
             }
 
-            const n = Math.floor(part.data.length / 2)
+            const vertexCount = Math.floor(part.data.length / 2)
 
-            const positions = new Float32Array(n * 3)
-            for (let i = 0; i < n; i++) {
-                positions[i * 3 + 0] = part.data[i * 2 + 0]
-                positions[i * 3 + 1] = part.data[i * 2 + 1]
-                positions[i * 3 + 2] = z0
-            }
-
-            const normals = new Float32Array(n * 3)
-            for (let i = 0; i < n; i++) {
-                normals[i * 3 + 0] = 0
-                normals[i * 3 + 1] = 0
-                normals[i * 3 + 2] = 1
+            const positions_and_normals = new Float32Array(vertexCount * 6)
+            for (let i = 0; i < vertexCount; i++) {
+                const o = i * 6
+                positions_and_normals[o + 0] = part.data[i * 2 + 0]
+                positions_and_normals[o + 1] = part.data[i * 2 + 1]
+                positions_and_normals[o + 2] = z0
+                positions_and_normals[o + 3] = 0
+                positions_and_normals[o + 4] = 0
+                positions_and_normals[o + 5] = 1
             }
 
             // 直接复用 earcut 的三角形索引
             const indices = new Uint32Array(part.indices)
 
             return {
-                positions,
-                normals,
+                positions_and_normals,
                 indices,
                 meta: {
-                    vertexCount: n,
+                    vertexCount: vertexCount,
                     triangleCount: indices.length / 3,
                     z0,
                     mode: "flat",
@@ -320,7 +288,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             if (!Array.isArray(part.indices) || part.indices.length < 3) {
                 throw new Error(`part.indices must contain at least 1 triangle (>= 3 numbers).`)
             }
-            const n = Math.floor(part.data.length / 2)
+            const vertexCount = Math.floor(part.data.length / 2)
 
             // Normalize 2D vector (x, y). If too small, return (0, 0).
             const norm2 = (x, y) => {
@@ -329,28 +297,26 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 return [x / len, y / len]
             }
 
-            const positions = []
-            const normals = []
+            const positions_and_normals = []
             const indices = []
 
             const vertex_push = (x, y, z, nx, ny, nz) => {
-                const index = positions.length / 3
-                positions.push(x, y, z)
-                normals.push(nx, ny, nz)
+                const index = positions_and_normals.length / 6
+                positions_and_normals.push(x, y, z, nx, ny, nz)
                 return index
             }
 
             // ROOF vertices (shared)
             const roofBase = 0
-            for (let i = 0; i < n; i++) {
+            for (let i = 0; i < vertexCount; i++) {
                 const x = part.data[i * 2 + 0]
                 const y = part.data[i * 2 + 1]
                 vertex_push(x, y, height, 0, 0, 1)
             }
 
             // GROUND vertices (shared, optional)
-            const groundBase = positions.length / 3
-            for (let i = 0; i < n; i++) {
+            const groundBase = positions_and_normals.length / 6
+            for (let i = 0; i < vertexCount; i++) {
                 const x = part.data[i * 2 + 0]
                 const y = part.data[i * 2 + 1]
                 vertex_push(x, y, 0, 0, 0, -1)
@@ -374,8 +340,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             }
 
             // WALLS (outer ring only)
-            for (let i = 0; i < n; i++) {
-                const j = (i + 1) % n
+            for (let i = 0; i < vertexCount; i++) {
+                const j = (i + 1) % vertexCount
                 const xi = part.data[i * 2 + 0]
                 const yi = part.data[i * 2 + 1]
                 const xj = part.data[j * 2 + 0]
@@ -396,11 +362,10 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             }
 
             return {
-                positions: new Float32Array(positions),
-                normals: new Float32Array(normals),
+                positions_and_normals: new Float32Array(positions_and_normals),
                 indices: new Uint32Array(indices),
                 meta: {
-                    vertexCount: positions.length / 3,
+                    vertexCount: positions_and_normals.length / 6,
                     triangleCount: indices.length / 3,
                     height
                 }
@@ -408,8 +373,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         // Deploy data
-        let BUILDING_MODE = "flat";
-        data_deploy = (device, maxPerFrame = 100000) => {
+        let BUILDING_MODE = "extrude";
+        data_deploy = (device) => {
+            const maxPerFrame = 1000
             for (let i = 0; i < maxPerFrame && GPUResources.data.pending.length; i++) {
                 const building = GPUResources.data.pending.shift()
 
@@ -425,17 +391,10 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
                     part.buffer.vertex = device.createBuffer({
                         label: `Vertex Buffer for ${building.name}`,
-                        size: part.positions.byteLength,
+                        size: part.positions_and_normals.byteLength,
                         usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
                     })
-                    device.queue.writeBuffer(part.buffer.vertex, 0, part.positions)
-
-                    part.buffer.normal = device.createBuffer({
-                        label: `Normal Buffer for ${building.name}`,
-                        size: part.normals.byteLength,
-                        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-                    })
-                    device.queue.writeBuffer(part.buffer.normal, 0, part.normals)
+                    device.queue.writeBuffer(part.buffer.vertex, 0, part.positions_and_normals)
 
                     part.buffer.index = device.createBuffer({
                         label: `Index Buffer for ${building.name}`,
@@ -457,6 +416,17 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 stats.processed++;
             }
         }
+
+        setInterval(() => {
+            console.log("[progress]", {
+                received: stats.received,
+                pending: GPUResources.data.pending.length,
+                rendering: GPUResources.data.rendering.length,
+                processed: stats.processed,
+                errors: stats.errors,
+                lastIndex: stats.lastIndex,
+            });
+        }, 1000);
 
         /* === Camera/Transform Data === */
         let fov, aspect, near, far
@@ -605,7 +575,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 entryPoint: `vertexMain`,
                 buffers: [
                     GPUResources.bufferLayout.vertex.position,
-                    GPUResources.bufferLayout.vertex.normal
+                    // GPUResources.bufferLayout.vertex.normal
                 ]
             },
             fragment: {
@@ -656,7 +626,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         function zoomScale() {
             // 放大(zoom大) => scale小(更慢)
             // 缩小(zoom小) => scale大(更快)
-            console.log(`zoom:`, zoom)
+            // console.log(`zoom:`, zoom)
             let t = Math.max(0, Math.min(1,
                 (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)
             ));
@@ -733,7 +703,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             colorAttachments: [
                 {
                     view: context.getCurrentTexture().createView(),
-                    loadOp: "clear",
+                    loadOp: "load",
                     clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
                     storeOp: "store",
                 }
@@ -744,8 +714,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         renderPass.setBindGroup(0, GPUResources.bindGroup.global)
 
         // debug triangle
-        renderPass.setVertexBuffer(0, GPUResources.buffer.debugPos)
-        renderPass.setVertexBuffer(1, GPUResources.buffer.debugNrm)
+        renderPass.setVertexBuffer(0, GPUResources.buffer.debugPos_and_debugNrm)
         renderPass.draw(3, 1, 0, 0)
 
         matrix.identity = mat4.create()
@@ -758,9 +727,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             if (!building?.parts) continue
 
             for (const part of building.parts) {
-                if (!part?.buffer?.vertex || !part?.buffer?.normal || !part?.buffer?.index || !part?.indexCount) continue
+                if (!part?.buffer?.vertex || !part?.buffer?.index || !part?.indexCount) continue
                 renderPass.setVertexBuffer(0, part.buffer.vertex)
-                renderPass.setVertexBuffer(1, part.buffer.normal)
                 renderPass.setIndexBuffer(part.buffer.index, `uint32`)
                 renderPass.drawIndexed(part.indexCount, 1, 0, 0, 0)
             }
@@ -773,14 +741,16 @@ window.addEventListener(`DOMContentLoaded`, async () => {
     }
 
     // === Render ===
-    let frame, lastTime, deltaTime
+    let frame, lastTime, deltaTime, PAUSE_RENDER = false
     lastTime = performance.now()
     frame = async (now) => {
         deltaTime = (now - lastTime) / 1000
         lastTime = now
-        data_deploy(device, 10)
+        data_deploy(device)
 
-        render(deltaTime)
+        if (PAUSE_RENDER == false) {
+            render(deltaTime)
+        }
 
         requestAnimationFrame(frame)
     }
