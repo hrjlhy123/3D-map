@@ -59,7 +59,12 @@ window.addEventListener(`DOMContentLoaded`, async () => {
     let GPUResources = {
         data: {
             pending: [],
-            rendering: [],
+            rendering: {
+                vertex: [],
+                indices: [],
+                vertexByteOffset: 0,
+                indexByteOffset: 0,
+            },
         },
         buffer: {},
         bindGroup: {},
@@ -85,6 +90,14 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             GPUResources.buffer.identity = device.createBuffer({
                 size: 64, // 1 x mat4x4 = 64 bytes
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            })
+            GPUResources.buffer.vertex = device.createBuffer({
+                size: 268435456, // 256MB x 1024 x 1024
+                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+            })
+            GPUResources.buffer.indices = device.createBuffer({
+                size: 134217728, // 128MB x 1024 x 1024
+                usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
             })
         }
 
@@ -236,6 +249,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         document.getElementById("startBtn").onclick = () => {
             ws.send(JSON.stringify({ type: "start", bbox: bbox, limit: +1000000000, sample: +1000000000 }))
+            PAUSE_RENDER = false
         }
 
         document.getElementById("stopBtn").onclick = () => {
@@ -375,8 +389,16 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         // Deploy data
         let BUILDING_MODE = "extrude";
         data_deploy = (device) => {
-            const maxPerFrame = 1000
-            for (let i = 0; i < maxPerFrame && GPUResources.data.pending.length; i++) {
+            const BUDGET_MS = 12.0 // ?ms / frame to avoid lag
+            const t0 = performance.now()
+            // const maxPerFrame = 200
+
+            // for (let i = 0; i < maxPerFrame && GPUResources.data.pending.length; i++) {
+            while (GPUResources.data.pending.length) {
+                if (performance.now() - t0 > BUDGET_MS) {
+                    break;
+                }
+
                 const building = GPUResources.data.pending.shift()
 
                 // flat/extrude
@@ -387,33 +409,25 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 }
 
                 for (const part of building.parts) {
-                    part.buffer = {}
 
-                    part.buffer.vertex = device.createBuffer({
-                        label: `Vertex Buffer for ${building.name}`,
-                        size: part.positions_and_normals.byteLength,
-                        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-                    })
-                    device.queue.writeBuffer(part.buffer.vertex, 0, part.positions_and_normals)
+                    const indexArray = new Uint32Array(part.indices.length)
+                    for (let i = 0; i < part.indices.length; i++) {
+                        indexArray[i] = part.indices[i] + (GPUResources.data.rendering.vertexByteOffset / 24) | 0
+                    }
 
-                    part.buffer.index = device.createBuffer({
-                        label: `Index Buffer for ${building.name}`,
-                        size: part.indices.byteLength,
-                        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-                    })
-                    device.queue.writeBuffer(part.buffer.index, 0, part.indices)
+                    device.queue.writeBuffer(GPUResources.buffer.vertex, GPUResources.data.rendering.vertexByteOffset, part.positions_and_normals)
+                    device.queue.writeBuffer(GPUResources.buffer.indices, GPUResources.data.rendering.indexByteOffset, indexArray)
 
-                    part.indexCount = part.indices.length
-                }
-
-                GPUResources.data.rendering.push(building)
-
-                if (!ready.buildings) {
-                    ready.buildings = true
-                    console.log(`Start rendering!`)
+                    GPUResources.data.rendering.vertexByteOffset += part.positions_and_normals.byteLength
+                    GPUResources.data.rendering.indexByteOffset += indexArray.byteLength
                 }
 
                 stats.processed++;
+            }
+
+            if (!ready.buildings) {
+                ready.buildings = true
+                console.log(`Start rendering!`)
             }
         }
 
@@ -421,10 +435,12 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             console.log("[progress]", {
                 received: stats.received,
                 pending: GPUResources.data.pending.length,
-                rendering: GPUResources.data.rendering.length,
                 processed: stats.processed,
                 errors: stats.errors,
                 lastIndex: stats.lastIndex,
+                // vMB: (GPUResources.data.rendering.vertexByteOffset / 1024 / 1024).toFixed(1),
+                // iMB: (GPUResources.data.rendering.indexByteOffset / 1024 / 1024).toFixed(1),
+                // indexCount: (R.indexByteOffset / 4) | 0,
             });
         }, 1000);
 
@@ -575,7 +591,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 entryPoint: `vertexMain`,
                 buffers: [
                     GPUResources.bufferLayout.vertex.position,
-                    // GPUResources.bufferLayout.vertex.normal
                 ]
             },
             fragment: {
@@ -717,25 +732,16 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         renderPass.setVertexBuffer(0, GPUResources.buffer.debugPos_and_debugNrm)
         renderPass.draw(3, 1, 0, 0)
 
-        matrix.identity = mat4.create()
-        mat4.identity(matrix.identity)
-
-        // Camera Control
-        camera(mat4, GPUResources, device, matrix);
-
-        for (const building of GPUResources.data.rendering) {
-            if (!building?.parts) continue
-
-            for (const part of building.parts) {
-                if (!part?.buffer?.vertex || !part?.buffer?.index || !part?.indexCount) continue
-                renderPass.setVertexBuffer(0, part.buffer.vertex)
-                renderPass.setIndexBuffer(part.buffer.index, `uint32`)
-                renderPass.drawIndexed(part.indexCount, 1, 0, 0, 0)
-            }
-            // console.log("[draw]", building.name)
+        if (PAUSE_RENDER == false && GPUResources.data.rendering.indexByteOffset > 0) {
+            renderPass.setVertexBuffer(0, GPUResources.buffer.vertex)
+            renderPass.setIndexBuffer(GPUResources.buffer.indices, `uint32`)
+            renderPass.drawIndexed(GPUResources.data.rendering.indexByteOffset / 4, 1, 0, 0, 0)
         }
 
         renderPass.end()
+
+        // Camera Control
+        camera(mat4, GPUResources, device, matrix);
 
         device.queue.submit([encoder.finish()])
     }
@@ -748,9 +754,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         lastTime = now
         data_deploy(device)
 
-        if (PAUSE_RENDER == false) {
-            render(deltaTime)
-        }
+        render(deltaTime)
 
         requestAnimationFrame(frame)
     }
