@@ -17,49 +17,52 @@ const { streamArray } = streamArrayPkg
 
 import { geojsonToIndices } from "./algorithm/earcut.js";
 
-// const GEOJSON_PATH = "../data/gis_osm_buildings_a_free_1.geojson"
-const DATA_DIR = path.resolve(`../data`);
+import * as h3 from "h3-js";
 
-// 1. Automatically locate all *_A_*.geojson files
-const AREA_FILES = fs
-    .readdirSync(DATA_DIR)
-    // .filter((f) => f.endsWith(`.geojson`) && f.includes(`_a_`))
-    .filter((f) => f.endsWith(`.geojson`) && f.includes(`buildings_a_`))
-    .map((f) => path.join(DATA_DIR, f))
+import readline from "readline";
 
-console.log(`AREA_FILES:`, AREA_FILES.map(p => path.basename(p)))
+async function readNdjsonTile(filePath, onFeature) {
+    const rs = fs.createReadStream(filePath, { encoding: "utf8" });
+    const rl = readline.createInterface({ input: rs, crlfDelay: Infinity });
 
-const bbox_intersect = (a, b) => {
-    return !(
-        a.maxLon < b.minLon ||
-        a.minLon > b.maxLon ||
-        a.maxLat < b.minLat ||
-        a.minLat > b.maxLat
-    )
+    for await (const line of rl) {
+        if (!line) continue;
+        const feature = JSON.parse(line);
+        await onFeature(feature); // 这里面跑 earcut + ws.send
+    }
 }
 
-const bbox_compute = (geometry) => {
-    let minLon = +Infinity, minLat = +Infinity
-    let maxLon = -Infinity, maxLat = -Infinity
+const TILE_ROOT = path.resolve("../data_hex_tiles");
 
-    const visit = ([lon, lat]) => {
-        if (lon < minLon) minLon = lon
-        if (lon > maxLon) maxLon = lon
-        if (lat < minLat) minLat = lat
-        if (lat > maxLat) maxLat = lat
+function tileFile(layer, res, h3id) {
+    return path.join(TILE_ROOT, layer, `r${res}`, `${h3id}.ndjson`);
+}
+
+function bboxToGeoJsonPolygon(b) {
+    // h3-js 通常吃 GeoJSON polygon： [ [ [lon,lat], ... ] ]
+    return {
+        type: "Polygon",
+        coordinates: [[
+            [b.minLon, b.minLat],
+            [b.maxLon, b.minLat],
+            [b.maxLon, b.maxLat],
+            [b.minLon, b.maxLat],
+            [b.minLon, b.minLat],
+        ]],
+    };
+}
+
+function h3idsForBbox(bbox, res) {
+    const poly = bboxToGeoJsonPolygon(bbox);
+
+    // polygonToCells 需要的是 coordinates（数组），不是 {type,coordinates} 对象
+    if (h3.polygonToCells) {
+        // 第3个参数 true：表示输入是 GeoJSON 格式（[lon,lat]）
+        return h3.polygonToCells(poly.coordinates, res, true);
     }
 
-    if (geometry.type == `Polygon`) {
-        geometry.coordinates.forEach(ring => ring.forEach(visit))
-    } else if (geometry.type == `MultiPolygon`) {
-        geometry.coordinates.forEach(poly =>
-            poly.forEach(ring => ring.forEach(visit))
-        )
-    } else {
-        return null
-    }
-
-    return { minLon, minLat, maxLon, maxLat }
+    // 旧版本兼容（一般 polyfill 接受 GeoJSON 对象）
+    return h3.polyfill(poly, res, true);
 }
 
 const server = http.createServer()
@@ -82,100 +85,6 @@ wss.on("connection", (ws) => {
         running = false
     }
 
-    // 2. read file
-    const readFile = (filePath, { bbox, limit, sample }, state) => {
-        const layer = path.basename(filePath).replace(`.geojson`, ``)
-
-        ws.send(JSON.stringify({ type: `status`, message: `file_start`, layer }))
-
-        return new Promise((resolve) => {
-            pipeline = chain([
-                fs.createReadStream(filePath),
-                parser(),
-                pick({ filter: `features` }),
-                streamArray()
-            ])
-
-            pipeline.on(`data`, ({ value: feature }) => {
-                if (abort || ws.readyState != WebSocket.OPEN) {
-                    pipeline.destroy()
-                    return
-                }
-
-                if (state.sent >= limit) {
-                    ws.send(JSON.stringify({ type: `done`, sent: state.sent }))
-                    pipeline.destroy()
-                    return
-                }
-
-                if (bbox) {
-                    const fb = bbox_compute(feature.geometry)
-                    if (!fb || !bbox_intersect(fb, bbox)) return
-                }
-
-                try {
-                    const parts = geojsonToIndices(feature)
-
-                    // ⚠️ 最简单：直接推送 earcut 结果（parts 可能很大）
-                    // 更稳：只推送统计信息，必要时再按需推 parts
-                    const payload = sample && state.sent >= sample
-                        ? {
-                            // 推轻量版
-                            type: "feature",
-                            index: state.sent,
-                            layer,
-                            name: feature.properties?.name ?? "(no name)",
-                            geomType: feature.geometry?.type,
-                            verts: parts.reduce((s, p) => s + p.data.length / 2, 0),
-                            tris: parts.reduce((s, p) => s + p.indices.length / 3, 0)
-                        } : {
-                            // 推完整版
-                            type: "feature",
-                            index: state.sent,
-                            layer,
-                            name: feature.properties?.name ?? "(no name)",
-                            geomType: feature.geometry?.type,
-                            parts,
-                        }
-                    ws.send(JSON.stringify(payload))
-                    state.sent++
-                } catch (e) {
-                    ws.send(
-                        JSON.stringify({
-                            type: "feature_error",
-                            index: state.sent,
-                            layer,
-                            message: e?.message ?? String(e),
-                        })
-                    )
-                    state.errors++
-                }
-            })
-
-            pipeline.on(`end`, () => {
-                ws.send(JSON.stringify({ type: `status`, message: `file_end`, layer }))
-                resolve()
-            })
-
-            pipeline.on(`error`, (err) => {
-                // trigger by stop/destroy
-                if (String(err?.code) == `ERR_STREAM_PREMATURE_CLOSE`) {
-                    ws.send(JSON.stringify({ type: `status`, message: `stopped` }))
-                    resolve()
-                    return
-                }
-                ws.send(
-                    JSON.stringify({
-                        type: `error`,
-                        message: err?.message ?? String(err),
-                        layer,
-                    })
-                )
-                resolve()
-            })
-        })
-    }
-
     ws.on("message", async (raw) => {
         let msg
         try {
@@ -186,39 +95,156 @@ wss.on("connection", (ws) => {
         }
 
         if (msg.type === "start") {
-            if (running) return
+            if (running) return;
 
-            const limit = Number(msg.limit ?? 50)
-            const sample = Number(msg.sample ?? 5) // 0 表示不限制推送内容大小
-            const bbox = msg.bbox ?? null
+            const bbox = msg.bbox ?? null;
+            const RES = msg.res ?? 7;
+            const layer = msg.layer ?? "gis_osm_buildings_a_free_1";
 
-            abort = false
-            running = true
+            if (!bbox || bbox.minLon == null) {
+                ws.send(JSON.stringify({ type: "error", message: "bbox invalid" }));
+                running = false;
+                return;
+            }
+
+            abort = false;
+            running = true;
+
+            const state = { sent: 0, errors: 0 };
+
+            // bbox 中心
+            const centerLon = (bbox.minLon + bbox.maxLon) / 2;
+            const centerLat = (bbox.minLat + bbox.maxLat) / 2;
+
+            // ✅ 1) bbox 内所有 tiles（数组）
+            const tiles = h3idsForBbox(bbox, RES);
+
+            // ✅ 2) tiles 按“距离中心”由近到远排序
+            const tileDist2 = (h3id) => {
+                const [lat, lon] = h3.cellToLatLng(h3id); // 返回 [lat, lon]
+                const dx = lon - centerLon;
+                const dy = lat - centerLat;
+                return dx * dx + dy * dy;
+            };
+            tiles.sort((a, b) => tileDist2(a) - tileDist2(b));
 
             ws.send(JSON.stringify({
                 type: "status",
                 message: "started",
-                limit,
-                files: AREA_FILES.map(p => path.basename(p)),
-            }))
+                tiles: tiles.length,
+            }));
 
-            const state = { sent: 0, errors: 0 }
+            // ===== batching state =====
+            let batch = [];
+            let batchBytes = 0;
+            let flushTimer = null;
+            let flushing = false;
 
-            // 3. Run sequentially in file order
-            for (const filePath of AREA_FILES) {
-                if (abort) break
-                if (state.sent >= limit) break
-                await readFile(filePath, { bbox, limit, sample }, state)
+            // tune these
+            const MAX_ITEMS = 100_000_000;             // 你原来的 500 OK
+            const MAX_BYTES = 2_000_000;       // 1MB 左右一包（建议加）
+            const MAX_DELAY_MS = 1_000;           // 你原来的 50ms OK
+            const BACKPRESSURE_HIGH = 8_000_000; // 8MB：开始等
+            const BACKPRESSURE_LOW = 2_000_000; // 2MB：恢复发
+
+            function scheduleFlush() {
+                if (flushTimer) return;
+                flushTimer = setTimeout(() => {
+                    flushTimer = null;
+                    void flushBatch();
+                }, MAX_DELAY_MS);
             }
 
+            async function waitBackpressure() {
+                // ws 没有 drain 事件，只能轮询 bufferedAmount
+                if (ws.bufferedAmount <= BACKPRESSURE_HIGH) return;
+                while (ws.bufferedAmount > BACKPRESSURE_LOW) {
+                    await new Promise(r => setTimeout(r, 5));
+                }
+            }
+
+            async function flushBatch() {
+                if (flushing) return;
+                if (batch.length === 0) return;
+
+                flushing = true;
+                try {
+                    await waitBackpressure();
+
+                    const payload = {
+                        type: "batch",
+                        layer,
+                        // 可选：如果你想按 tile 分组，这里也可以带 h3id（前提：batch 里同 tile）
+                        features: batch,
+                    };
+
+                    ws.send(JSON.stringify(payload));
+
+                    batch = [];
+                    batchBytes = 0;
+                } finally {
+                    flushing = false;
+                }
+            }
+
+            function pushToBatch(featureObj) {
+                // 粗略估算 bytes：宁愿估大一点触发 flush，也别估小导致包太大
+                const approx = featureObj._bytes ?? 0; // 你也可以不传，用 JSON 长度估算
+                batch.push(featureObj);
+                batchBytes += approx;
+
+                if (batch.length >= MAX_ITEMS || batchBytes >= MAX_BYTES) {
+                    void flushBatch(); // 立刻 flush（不用等 timer）
+                } else {
+                    scheduleFlush();   // 走 timer flush
+                }
+            }
+
+            // ✅ 3) 一次只读 1 个 tile，读到就发（tile 内不排序）
+            for (const h3id of tiles) {
+                if (abort) break;
+
+                const filePath = tileFile(layer, RES, h3id);
+                if (!fs.existsSync(filePath)) continue;
+
+                await readNdjsonTile(filePath, async (feature) => {
+                    if (abort) return;
+
+                    try {
+                        // const parts = geojsonToIndices(feature);
+
+                        // ws.send(JSON.stringify({ type: "feature", layer, h3id, parts }));
+                        // state.sent++;
+                        const parts = geojsonToIndices(feature);
+
+                        // 估算大小：最简单就是 stringify 一下取 length（会多一点 CPU，但比每条 send 省太多）
+                        // 更省 CPU 的方式是根据数组长度粗估：例如 positions/indices 长度 * 4 bytes 等
+                        const obj = { h3id, parts };
+                        obj._bytes = JSON.stringify(obj).length;
+
+                        pushToBatch(obj);
+                        state.sent++;
+
+                        // ✅ 可选：简单背压，防止发太快撑爆内存（10MB 阈值你可调）
+                        if (ws.bufferedAmount > 10_000_000) {
+                            await new Promise(r => setTimeout(r, 5));
+                        }
+                    } catch (e) {
+                        state.errors++;
+                    }
+                });
+            }
+
+            await flushBatch();
             ws.send(JSON.stringify({
-                type: `status`,
-                message: `completed`,
+                type: "status",
+                message: abort ? "stopped" : "completed",
                 sent: state.sent,
                 errors: state.errors,
-            }))
+            }));
 
-            return
+            running = false;
+            return;
         }
 
         if (msg.type == "stop") {

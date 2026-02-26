@@ -222,39 +222,51 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         maxLon: null,
         maxLat: null
     }
+
+    const ws = new WebSocket("ws://localhost:8080")
     {
         /* === Model Data === */
         // fetch data (websocket)
-        const ws = new WebSocket("ws://localhost:8080")
 
         ws.onopen = () => log.textContent += "connected\n"
 
         ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data)
+            const msg = JSON.parse(e.data);
 
-            if (msg.type == `feature`) {
-                GPUResources.data.pending.push(msg)
-                stats.received++;
-                stats.lastIndex = msg.index ?? stats.lastIndex;
-                ready.stream = true
-                return
+            if (msg.type === "feature") {
+                // 兼容旧协议（如果你还会混发）
+                handleFeature(msg);
+                flushPoolToPending(false);
+                return;
             }
 
-            if (msg.type == `done` || msg.type == `file_end`) {
-                console.log(`GPUResources.data.rendering:`, GPUResources.data.rendering)
+            if (msg.type === "batch") {
+                const features = msg.features || [];
+                // 可选：你原本有 layer，这里也能用 msg.layer 做分层过滤/分桶
+                for (let i = 0; i < features.length; i++) {
+                    handleFeature(features[i]);
+                }
+
+                // ✅ 关键：batch 只 flush 一次（别每条 flush）
+                flushPoolToPending(false);
+                ready.stream = true;
+                return;
+            }
+
+            if (msg.type === "done" || msg.type === "file_end") {
+                // 结束前最后 flush 一次，避免池子里还有剩余
+                flushPoolToPending(true);
                 console.log("Stream done", { received: stats.received, lastIndex: stats.lastIndex });
-                return
+                return;
             }
-        }
+        };
 
-        document.getElementById("startBtn").onclick = () => {
-            ws.send(JSON.stringify({ type: "start", bbox: bbox, limit: +1000000000, sample: +1000000000 }))
-            PAUSE_RENDER = false
-        }
+        function handleFeature(f) {
+            f._d2 = buildingDist2(f);
+            pool.push(f);
 
-        document.getElementById("stopBtn").onclick = () => {
-            ws.send(JSON.stringify({ type: "stop" }))
-            PAUSE_RENDER = true
+            stats.received++;
+            stats.lastIndex = f.index ?? stats.lastIndex;
         }
         // Preprocess data
         //// 2D building
@@ -386,10 +398,47 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             }
         }
 
+        // Pool sort (center-first rendering)
+        let centerLon, centerLat
+        console.log(`centerLon: ${centerLon}, centerLat: ${centerLat}`)
+
+        const POOL_TARGET = 100_000_000;     // 池子凑到多少个 building 就 flush 一次（你可调 300~3000）
+        const POOL_MAX_HOLD_MS = 1_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
+
+        let pool = [];
+        let poolLastFlush = performance.now();
+
+        function buildingDist2(msg) {
+            // msg.parts: [ {data:[lon,lat,...], holes, indices}, ... ]
+            const p0 = msg?.parts?.[0];
+            const data = p0?.data;
+            if (!data || data.length < 2) return Number.POSITIVE_INFINITY;
+            const lon = data[0], lat = data[1];
+            const dx = lon - centerLon;
+            const dy = lat - centerLat;
+            return dx * dx + dy * dy;
+        }
+
+        function flushPoolToPending(force = false) {
+            const now = performance.now();
+            const tooLong = (now - poolLastFlush) > POOL_MAX_HOLD_MS;
+
+            if (!force && pool.length < POOL_TARGET && !tooLong) return;
+
+            // sort: near -> far
+            pool.sort((a, b) => a._d2 - b._d2);
+
+            GPUResources.data.pending.push(...pool);
+
+            pool = [];
+            poolLastFlush = now;
+        }
+
         // Deploy data
         let BUILDING_MODE = "extrude";
         data_deploy = (device) => {
-            const BUDGET_MS = 12.0 // ?ms / frame to avoid lag
+            flushPoolToPending(false);
+            const BUDGET_MS = 48.0 // ?ms / frame to avoid lag
             const t0 = performance.now()
             // const maxPerFrame = 200
 
@@ -494,6 +543,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 }
 
                 console.log(`bbox:`, bbox)
+            }
+
+            {
+                centerLon = (bbox.minLon + bbox.maxLon) / 2;
+                centerLat = (bbox.minLat + bbox.maxLat) / 2;
             }
 
             {
@@ -759,4 +813,21 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         requestAnimationFrame(frame)
     }
     frame()
+
+
+    // Page
+    document.getElementById("startBtn").onclick = () => {
+        ws.send(JSON.stringify({
+            type: "start",
+            bbox: bbox,
+            layer: "gis_osm_buildings_a_free_1",
+            res: 7
+        }))
+        PAUSE_RENDER = false
+    }
+
+    document.getElementById("stopBtn").onclick = () => {
+        ws.send(JSON.stringify({ type: "stop" }))
+        PAUSE_RENDER = true
+    }
 })
