@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>WebGPU Cube + Volumetric Glow (minimal)</title>
+    <style>
+  html,body{margin:0;height:100%;background:#0b0f14;overflow:hidden}
+  canvas{width:100%;height:100%;display:block}
+  .hint{position:fixed;left:12px;top:10px;color:#cbd5e1;font:12px/1.3 system-ui,-apple-system,Segoe UI,Roboto;opacity:.85;user-select:none}
+  .hint b{color:#fff}
+</style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <div class="hint">Hover the cube to turn it <b>red</b> and enable <b>pink
+        volumetric glow</b>.</div>
+
+    <script type="module">
+  import { mat4, vec3 } from "https://cdn.jsdelivr.net/npm/gl-matrix/esm/index.js";
+function rayBox(ro, rd, bmin, bmax){
+  let tmin=-1e20, tmax=1e20;
+  for(let i=0;i<3;i++){
+    const inv=1/(rd[i]||1e-20);
+    let t0=(bmin[i]-ro[i])*inv, t1=(bmax[i]-ro[i])*inv;
+    if(t0>t1){ const tmp=t0; t0=t1; t1=tmp; }
+    tmin=Math.max(tmin,t0);
+    tmax=Math.min(tmax,t1);
+    if(tmax<tmin) return null;
+  }
+  return [tmin,tmax];
+}
+/* ------------------------------ webgpu setup ------------------------------ */
+const canvas = document.getElementById('c');
+if(!navigator.gpu){
+  document.body.innerHTML = '<pre style="color:#fff;padding:16px">WebGPU not supported.</pre>';
+  throw new Error('WebGPU not supported');
+}
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const ctx = canvas.getContext('webgpu');
+const format = navigator.gpu.getPreferredCanvasFormat();
+
+let sceneTex, sceneView, depthTex, depthView, compBindGroup=null;
+function resize(){
+  const dpr=Math.min(2,devicePixelRatio||1);
+  const w=Math.max(2,Math.floor(canvas.clientWidth*dpr));
+  const h=Math.max(2,Math.floor(canvas.clientHeight*dpr));
+  canvas.width=w; canvas.height=h;
+  ctx.configure({device,format,alphaMode:'opaque'});
+  if(sceneTex) sceneTex.destroy();
+  if(depthTex) depthTex.destroy();
+  sceneTex=device.createTexture({size:[w,h],format:'rgba16float',
+    usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
+  depthTex=device.createTexture({size:[w,h],format:'depth24plus',
+    usage:GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING});
+  sceneView=sceneTex.createView();
+  depthView=depthTex.createView();
+  compBindGroup=null; // rebuild (views changed)
+}
+addEventListener('resize', resize);
+resize();
+
+/* ------------------------------ cube geometry ----------------------------- */
+const cubeVerts=new Float32Array([
+  // +Z
+  -1,-1, 1, 0, 0, 1, 1,-1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, -1,-1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, -1, 1, 1, 0, 0, 1, 
+  // -Z
+  -1,-1,-1, 0, 0, -1, -1, 1,-1, 0, 0, -1, 1, 1,-1, 0, 0, -1, -1,-1,-1, 0, 0, -1, 1, 1,-1, 0, 0, -1, 1,-1,-1, 0, 0, -1, 
+  // +X
+   1,-1,-1, 1, 0, 0, 1, 1,-1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1,-1,-1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1,-1, 1, 1, 0, 0, 
+  // -X
+  -1,-1,-1, -1, 0, 0, -1,-1, 1, -1, 0, 0, -1, 1, 1, -1, 0, 0, -1,-1,-1, -1, 0, 0, -1, 1, 1, -1, 0, 0, -1, 1,-1, -1, 0, 0, 
+  // +Y
+  -1, 1,-1, 0, 1, 0, -1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, -1, 1,-1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1,-1, 0, 1, 0, 
+  // -Y
+  -1,-1,-1, 0, -1, 0, 1,-1,-1, 0, -1, 0, 1,-1, 1, 0, -1, 0, -1,-1,-1, 0, -1, 0, 1,-1, 1, 0, -1, 0, -1,-1, 1, 0, -1, 0, 
+]);
+const cubeVb=device.createBuffer({size:cubeVerts.byteLength,usage:GPUBufferUsage.VERTEX|GPUBufferUsage.COPY_DST});
+device.queue.writeBuffer(cubeVb,0,cubeVerts);
+
+/* -------------------------------- uniforms --------------------------------
+U: viewProj, model, modelInv, invViewProj, camPos, params(time,hover,near,far)
+---------------------------------------------------------------------------- */
+const ubo=device.createBuffer({size:(16*4*4 + 4*4 + 4*4), usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+const samp=device.createSampler({magFilter:'linear',minFilter:'linear'});
+
+/* --------------------------------- shaders -------------------------------- */
+const cubeShader=device.createShaderModule({code:`
+struct U{
+  viewProj: mat4x4<f32>,
+  model: mat4x4<f32>,
+  modelInv: mat4x4<f32>,
+  invViewProj: mat4x4<f32>,
+  camPos: vec4<f32>,
+  params: vec4<f32>, // time, hovered, near, far
+};
+@group(0) @binding(0) var<uniform> u: U;
+
+struct VSOut{ 
+  @builtin(position) pos: vec4<f32>, 
+  @location(0) wpos: vec3<f32>, 
+  @location(1) normal: vec3<f32>, 
+};
+
+@vertex 
+fn vs_main(
+  @location(0) p: vec3<f32>,
+  @location(1) n: vec3<f32>,
+) -> VSOut{
+  var o:VSOut;
+  let wp=(u.model*vec4<f32>(p,1.0)).xyz;
+  o.wpos=wp;
+  o.pos=u.viewProj*vec4<f32>(wp,1.0);
+  let wn=(u.model*vec4<f32>(n,0.0)).xyz;
+  o.normal=wn;
+  return o;
+}
+
+@fragment 
+fn fs_main(i:VSOut) -> @location(0) vec4<f32>{
+  let yellow=vec3<f32>(0.95,0.75,0.18);
+  let red=vec3<f32>(0.75,0.12,0.12);
+  // Better solution: let base=mix(yellow, red, step(0.5, u.params.y));
+  var base = vec3<f32>();
+  if (u.params.y == 1) {
+    base = yellow;
+  } else {
+    base = red;
+  }
+  // let n=normalize(i.wpos); // ok for demo
+  // let v=normalize(u.camPos.xyz - i.wpos);
+  // let ndv=clamp(dot(n,v),0.0,1.0);
+  // let col=base*(0.55+0.45*ndv);
+  let n=normalize(i.normal);
+  let lightDir = normalize(vec3<f32>(1.0, 1.0, 1.0));
+  let diff = max(dot(n, lightDir), 0.0);
+  let ambient = 0.2;
+  let col=base*(ambient+diff);
+  return vec4<f32>(col,1.0);
+}`});
+
+const compShader=device.createShaderModule({code:`
+struct U{
+  viewProj: mat4x4<f32>,
+  model: mat4x4<f32>,
+  modelInv: mat4x4<f32>,
+  invViewProj: mat4x4<f32>,
+  camPos: vec4<f32>,
+  params: vec4<f32>, // time, hovered, near, far
+};
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var sceneTex: texture_2d<f32>;
+@group(0) @binding(2) var depthTex: texture_depth_2d;
+@group(0) @binding(3) var samp: sampler;
+
+struct VSOut{ @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+@vertex fn vs_full(@builtin(vertex_index) vid:u32) -> VSOut{
+  var o:VSOut;
+  let p=array<vec2<f32>,3>(vec2<f32>(-1.0,-1.0), vec2<f32>(3.0,-1.0), vec2<f32>(-1.0,3.0));
+  o.pos=vec4<f32>(p[vid],0.0,1.0);
+  return o;
+}
+
+fn reconstructWorldPos(uvNdc: vec2<f32>, depth01: f32) -> vec3<f32>{
+  let ndc=vec4<f32>(uvNdc*2.0-1.0, depth01*2.0-1.0, 1.0);
+  let wp=u.invViewProj*ndc;
+  return wp.xyz/wp.w;
+}
+fn rayDirFromUv(uvNdc: vec2<f32>) -> vec3<f32>{
+  let p0=reconstructWorldPos(uvNdc, 0.0);
+  let p1=reconstructWorldPos(uvNdc, 1.0);
+  return normalize(p1-p0);
+}
+fn sdBox(p: vec3<f32>, b: vec3<f32>) -> f32{
+  let q=abs(p)-b;
+  return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y,q.z)), 0.0);
+}
+fn tonemap(rgb: vec3<f32>) -> vec3<f32>{ return rgb/(vec3<f32>(1.0)+rgb); }
+
+@fragment fn fs_comp(i:VSOut) -> @location(0) vec4<f32>{
+  // IMPORTANT: use frag coords for both depthLoad and scene sampling -> avoids UV / Y-flip mismatch
+  let dimU=textureDimensions(sceneTex);
+  let dim=vec2<f32>(f32(dimU.x), f32(dimU.y));
+  let frag = i.pos.xy; // pixel coords, top-left origin
+  let uvScene=(frag+vec2<f32>(0.5))/dim;        // (0,0) top-left
+  let uvNdc=vec2<f32>(uvScene.x, 1.0-uvScene.y); // (0,0) bottom-left for NDC math
+
+  let scene=textureSample(sceneTex, samp, uvScene);
+  if(u.params.y < 0.5){
+    return vec4<f32>(tonemap(scene.rgb), 1.0);
+  }
+
+  // Scene depth hit (if nothing wrote depth, treat as far)
+  let d = textureLoad(depthTex, vec2<i32>(frag), 0);
+  let ro=u.camPos.xyz;
+  let rd=rayDirFromUv(uvNdc);
+  var tScene = 1e9;
+  if(d < 0.999999){
+    let wAtD=reconstructWorldPos(uvNdc, d);
+    tScene=length(wAtD-ro);
+  }
+
+  // Ray in cube-local space
+  let roL=(u.modelInv*vec4<f32>(ro,1.0)).xyz;
+  let rdL=(u.modelInv*vec4<f32>(rd,0.0)).xyz; // DO NOT normalize
+
+  // Convert scene clamp distance into local t (prevents wrong clipping when cube rotates)
+  let pSceneW = ro + rd * tScene;
+  let pSceneL = (u.modelInv * vec4<f32>(pSceneW,1.0)).xyz;
+  let tSceneL = dot(pSceneL - roL, rdL) / max(dot(rdL, rdL), 1e-20);
+
+  // Intersect an expanded local AABB around the cube
+  let half=vec3<f32>(1.0);
+  let shell=0.70;
+  let bmin=-(half+vec3<f32>(shell));
+  let bmax= (half+vec3<f32>(shell));
+
+  // slab AABB
+  var tmin=-1e10;
+  var tmax= 1e10;
+  for(var a:u32=0u; a<3u; a=a+1u){
+    let roA = select(select(roL.x, roL.y, a==1u), roL.z, a==2u);
+    let rdA = select(select(rdL.x, rdL.y, a==1u), rdL.z, a==2u);
+    let mnA = select(select(bmin.x, bmin.y, a==1u), bmin.z, a==2u);
+    let mxA = select(select(bmax.x, bmax.y, a==1u), bmax.z, a==2u);
+    let invD=1.0 / select(1e-20, rdA, abs(rdA) > 1e-20);
+    var t0=(mnA-roA)*invD;
+    var t1=(mxA-roA)*invD;
+    if(t0>t1){ let tmp=t0; t0=t1; t1=tmp; }
+    tmin=max(tmin,t0);
+    tmax=min(tmax,t1);
+  }
+  if(tmax < tmin){ return vec4<f32>(tonemap(scene.rgb),1.0); }
+
+  // Only march the visible segment (occluded by cube depth where cube is in front)
+  let tStart=max(tmin,0.0);
+  let tEnd=min(tmax, tSceneL);
+  if(tEnd <= tStart){ return vec4<f32>(tonemap(scene.rgb),1.0); }
+
+  // Raymarch: simple shell (no noise) -> fewer artifacts, fewer lines
+  let stepSize=0.05;
+  let maxSteps=96u;
+
+  var T=1.0;
+  var glow=vec3<f32>(0.0);
+  let emit=vec3<f32>(2.8, 0.55, 1.9); // HDR pink
+
+  for(var si:u32=0u; si<maxSteps; si=si+1u){
+    let t=tStart + f32(si)*stepSize;
+    if(t>tEnd){ break; }
+    let p = roL + rdL * t;
+
+    let dBox = sdBox(p, half);           // signed distance to cube
+    // only outside the cube (prevents "pink film" on the cube face)
+    if(dBox <= 0.0){ continue; }
+
+    // thickness around surface
+    let shellD = abs(dBox);
+    var dens = smoothstep(0.35, 0.0, shellD);
+    // slightly stronger near the silhouette
+    dens = dens * smoothstep(0.0, 0.12, dBox);
+
+    let sigma = dens * 3.0;
+    let a = 1.0 - exp(-sigma * stepSize);
+
+    glow += (T * a) * emit;
+    T *= (1.0 - a);
+    if(T < 0.02){ break; }
+  }
+
+  let outRgb = scene.rgb + glow;
+  return vec4<f32>(tonemap(outRgb),1.0);
+}`});
+
+/* ------------------------------- pipelines -------------------------------- */
+const cubePipe=device.createRenderPipeline({
+  layout:'auto',
+  vertex:{
+    module:cubeShader, 
+    entryPoint:'vs_main',
+    buffers:[{
+      arrayStride: 6 * 4, 
+      attributes: [
+        { shaderLocation: 0, offset: 0, format: 'float32x3'}, // position
+        { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' } // normal
+      ]
+    }]
+  },
+  fragment:{module:cubeShader, entryPoint:'fs_main', targets:[{format:'rgba16float'}]},
+  primitive:{topology:'triangle-list', cullMode:'back'},
+  depthStencil:{format:'depth24plus', depthWriteEnabled:true, depthCompare:'less'}
+});
+const compPipe=device.createRenderPipeline({
+  layout:'auto',
+  vertex:{module:compShader, entryPoint:'vs_full'},
+  fragment:{module:compShader, entryPoint:'fs_comp', targets:[{format}]},
+  primitive:{topology:'triangle-list'}
+});
+
+let cubeBG=null;
+function ensureBindGroups(){
+  if(!cubeBG){
+    cubeBG=device.createBindGroup({layout:cubePipe.getBindGroupLayout(0),
+      entries:[{binding:0,resource:{buffer:ubo}}]});
+  }
+  if(!compBindGroup){
+    compBindGroup=device.createBindGroup({layout:compPipe.getBindGroupLayout(0),
+      entries:[
+        {binding:0,resource:{buffer:ubo}},
+        {binding:1,resource:sceneView},
+        {binding:2,resource:depthView},
+        {binding:3,resource:samp},
+      ]});
+  }
+}
+
+/* ------------------------------- hover test ------------------------------- */
+let mouseX=0, mouseY=0, hovered=0;
+canvas.addEventListener('mousemove',(e)=>{
+  const r=canvas.getBoundingClientRect();
+  mouseX=(e.clientX-r.left)/r.width;
+  mouseY=(e.clientY-r.top)/r.height;
+});
+canvas.addEventListener('mouseleave',()=>{ hovered=0; });
+
+function computeHover(invViewProj, eye, modelInv){
+  const ndcX = mouseX * 2 - 1;
+  const ndcY = (1 - mouseY) * 2 - 1;
+
+  const unproj = (z01) => {
+    const z = z01 * 2 - 1;
+
+    // v = [ndcX, ndcY, z, 1]
+    const v0 = ndcX, v1 = ndcY, v2 = z, v3 = 1;
+
+    // invViewProj is mat4 (Float32Array length 16, column-major)
+    const m = invViewProj;
+
+    const x = m[0]*v0 + m[4]*v1 + m[8]*v2  + m[12]*v3;
+    const y = m[1]*v0 + m[5]*v1 + m[9]*v2  + m[13]*v3;
+    const z2= m[2]*v0 + m[6]*v1 + m[10]*v2 + m[14]*v3;
+    const w = m[3]*v0 + m[7]*v1 + m[11]*v2 + m[15]*v3;
+
+    return vec3.fromValues(x/w, y/w, z2/w);
+  };
+
+  const p0 = unproj(0);
+  const p1 = unproj(1);
+
+  // rd = normalize(p1 - p0)
+  const rd = vec3.create();
+  vec3.subtract(rd, p1, p0);
+  vec3.normalize(rd, rd);
+
+  const ro = eye; // already vec3
+
+  // Transform ray to local space
+  const ro4 = [ro[0], ro[1], ro[2], 1];
+  const rd4 = [rd[0], rd[1], rd[2], 0];
+
+  const roL4 = [0,0,0,0];
+  const rdL4 = [0,0,0,0];
+  // Use gl-matrix mat4 * vec4 manually (gl-matrix has vec4, but keep minimal)
+  {
+    const m = modelInv;
+    roL4[0] = m[0]*ro4[0] + m[4]*ro4[1] + m[8]*ro4[2]  + m[12]*ro4[3];
+    roL4[1] = m[1]*ro4[0] + m[5]*ro4[1] + m[9]*ro4[2]  + m[13]*ro4[3];
+    roL4[2] = m[2]*ro4[0] + m[6]*ro4[1] + m[10]*ro4[2] + m[14]*ro4[3];
+    roL4[3] = m[3]*ro4[0] + m[7]*ro4[1] + m[11]*ro4[2] + m[15]*ro4[3];
+
+    rdL4[0] = m[0]*rd4[0] + m[4]*rd4[1] + m[8]*rd4[2]  + m[12]*rd4[3];
+    rdL4[1] = m[1]*rd4[0] + m[5]*rd4[1] + m[9]*rd4[2]  + m[13]*rd4[3];
+    rdL4[2] = m[2]*rd4[0] + m[6]*rd4[1] + m[10]*rd4[2] + m[14]*rd4[3];
+    rdL4[3] = m[3]*rd4[0] + m[7]*rd4[1] + m[11]*rd4[2] + m[15]*rd4[3];
+  }
+
+  const roL = [roL4[0]/roL4[3], roL4[1]/roL4[3], roL4[2]/roL4[3]];
+  const rdL = [rdL4[0], rdL4[1], rdL4[2]]; // direction: no divide, no normalize
+
+  // console.log(`rayBox: ${rayBox(roL, rdL, [-1, -1, -1], [1, 1, 1])}`)
+  return rayBox(roL, rdL, [-1,-1,-1], [1,1,1]) ? 1 : 0;
+}
+
+/* --------------------------------- frame --------------------------------- */
+let start=performance.now();
+function frame(){
+  // resize();
+  ensureBindGroups();
+
+  const time=(performance.now()-start)*0.001;
+  const aspect=canvas.width/canvas.height;
+  const near=0.1, far=50;
+
+  const eye=vec3.fromValues(0,0,5);
+  const center=vec3.fromValues(0,0,0);
+  const up=vec3.fromValues(0,1,0);
+
+  const view=mat4.create();
+  mat4.lookAt(view, eye, center, up);
+
+  const proj=mat4.create();
+  mat4.perspective(proj, Math.PI/4, aspect, near, far);
+
+  const viewProj=mat4.create();
+  mat4.multiply(viewProj, proj, view);
+
+  const invViewProj=mat4.create();
+  mat4.invert(invViewProj, viewProj);
+
+  // REQUIRED: same model for cube & glow, and glow uses modelInv (exact inverse)
+  const model=mat4.create();
+  mat4.rotateY(model, model, time*1.2);
+  mat4.rotateX(model, model, time*0.7);
+  
+  const modelInv=mat4.create();
+  mat4.invert(modelInv, model);
+
+  hovered=computeHover(invViewProj, eye, modelInv);
+
+  // upload uniforms (tight packing, sequential)
+  let off=0;
+  device.queue.writeBuffer(ubo,off,viewProj); off+=64;
+  device.queue.writeBuffer(ubo,off,model); off+=64;
+  device.queue.writeBuffer(ubo,off,modelInv); off+=64;
+  device.queue.writeBuffer(ubo,off,invViewProj); off+=64;
+  device.queue.writeBuffer(ubo,off,new Float32Array([eye[0],eye[1],eye[2],1])); off+=16;
+  device.queue.writeBuffer(ubo,off,new Float32Array([time,hovered,near,far]));
+
+  const enc=device.createCommandEncoder();
+
+  // pass 1: cube -> HDR sceneTex + depth
+  {
+    const pass=enc.beginRenderPass({
+      colorAttachments:[{
+        view:sceneView, 
+        loadOp:'clear', 
+        storeOp:'store', 
+        clearValue:{r:0.03,g:0.05,b:0.07,a:1}
+      }],
+      depthStencilAttachment:{
+        view:depthView, 
+        depthLoadOp:'clear', 
+        depthStoreOp:'store', 
+        depthClearValue:1.0
+      }
+    });
+    pass.setPipeline(cubePipe);
+    pass.setBindGroup(0,cubeBG);
+    pass.setVertexBuffer(0,cubeVb);
+    pass.draw(cubeVerts.length/6); // pos3 + normal3
+    pass.end();
+  }
+
+  // pass 2: composite -> swapchain
+  {
+    const pass=enc.beginRenderPass({
+      colorAttachments:[{
+        view:ctx.getCurrentTexture().createView(), 
+        loadOp:'clear', 
+        storeOp:'store', 
+        clearValue:{r:0,g:0,b:0,a:1}
+      }]
+    });
+    pass.setPipeline(compPipe);
+    pass.setBindGroup(0,compBindGroup);
+    pass.draw(3);
+    pass.end();
+  }
+
+  device.queue.submit([enc.finish()]);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+  </body>
+</html>

@@ -34,8 +34,8 @@ async function readNdjsonTile(filePath, onFeature) {
 
 const TILE_ROOT = path.resolve("../data_hex_tiles");
 
-function tileFile(layer, res, h3id) {
-    return path.join(TILE_ROOT, layer, `r${res}`, `${h3id}.ndjson`);
+function tileFile(layer, res, id_h3) {
+    return path.join(TILE_ROOT, layer, `r${res}`, `${id_h3}.ndjson`);
 }
 
 function bboxToGeoJsonPolygon(b) {
@@ -120,8 +120,8 @@ wss.on("connection", (ws) => {
             const tiles = h3idsForBbox(bbox, RES);
 
             // ✅ 2) tiles 按“距离中心”由近到远排序
-            const tileDist2 = (h3id) => {
-                const [lat, lon] = h3.cellToLatLng(h3id); // 返回 [lat, lon]
+            const tileDist2 = (id_h3) => {
+                const [lat, lon] = h3.cellToLatLng(id_h3); // 返回 [lat, lon]
                 const dx = lon - centerLon;
                 const dy = lat - centerLat;
                 return dx * dx + dy * dy;
@@ -201,10 +201,10 @@ wss.on("connection", (ws) => {
             }
 
             // ✅ 3) 一次只读 1 个 tile，读到就发（tile 内不排序）
-            for (const h3id of tiles) {
+            for (const id_h3 of tiles) {
                 if (abort) break;
 
-                const filePath = tileFile(layer, RES, h3id);
+                const filePath = tileFile(layer, RES, id_h3);
                 if (!fs.existsSync(filePath)) continue;
 
                 await readNdjsonTile(filePath, async (feature) => {
@@ -213,13 +213,17 @@ wss.on("connection", (ws) => {
                     try {
                         // const parts = geojsonToIndices(feature);
 
-                        // ws.send(JSON.stringify({ type: "feature", layer, h3id, parts }));
+                        // ws.send(JSON.stringify({ type: "feature", layer, id_h3, parts }));
                         // state.sent++;
                         const parts = geojsonToIndices(feature);
 
                         // 估算大小：最简单就是 stringify 一下取 length（会多一点 CPU，但比每条 send 省太多）
                         // 更省 CPU 的方式是根据数组长度粗估：例如 positions/indices 长度 * 4 bytes 等
-                        const obj = { h3id, parts };
+                        const id_osm = feature?.properties?.osm_id ?? null;
+                        const obj = { id:{
+                            h3: id_h3,
+                            osm: id_osm,
+                        }, parts };
                         obj._bytes = JSON.stringify(obj).length;
 
                         pushToBatch(obj);

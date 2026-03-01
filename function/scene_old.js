@@ -1,4 +1,3 @@
-// import { text } from "./stream/consumers";
 import { mat4, vec3 } from "../node_modules/gl-matrix/esm/index.js";
 
 "use strict";
@@ -9,11 +8,8 @@ let canvas, ready = {
 }
 window.addEventListener(`DOMContentLoaded`, async () => {
     /* == Initialization == */
-    let context, adapter, device, format_canvas, alphaMode
-    let fov, aspect, near, far
-    let resize, resizeCamera
-    format_canvas = navigator.gpu.getPreferredCanvasFormat()
-    alphaMode = `premultiplied`
+    let context, adapter, device, format_canvas, alphaMode, devicePixelRatio
+
     {
         {
             navigator.gpu ?? (() => {
@@ -41,6 +37,22 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         for (const feature of adapter.features) {
             console.log(` ->`, feature)
         }
+
+        {
+            format_canvas = navigator.gpu.getPreferredCanvasFormat()
+            alphaMode = `premultiplied`
+            devicePixelRatio = window.devicePixelRatio || 1
+            canvas.width = canvas.clientWidth * devicePixelRatio
+            canvas.height = canvas.clientHeight * devicePixelRatio
+            console.log(`Canvas size:`, canvas.width, `x`, canvas.height)
+        }
+
+        context.configure({
+            device: device,
+            format: format_canvas,
+            alphaMode: alphaMode,
+            size: [canvas.width, canvas.height],
+        })
     }
 
     /* == Data Preprocessing == */
@@ -52,7 +64,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 indices: [],
                 vertexByteOffset: 0,
                 indexByteOffset: 0,
-                vertexIdByteOffset: 0,
             },
         },
         buffer: {},
@@ -62,11 +73,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             vertex: {}
         },
         pipelineLayout: null,
-        renderPipeline: {},
+        renderPipeline: {}
     }
 
+    const SCALE = 100000.0;
     {
-        // buffer
         {
             GPUResources.buffer.camera = device.createBuffer({
                 size: 128, // 2 x mat4x4 = 2 x 64 bytes
@@ -88,25 +99,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 size: 134217728, // 128MB x 1024 x 1024
                 usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
             })
-            GPUResources.buffer.interaction = device.createBuffer({
-                size: 16, // 4 * u32
-                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-            })
-            GPUResources.buffer.vertexId = device.createBuffer({
-                size: 67108864, // 64MB x 1024 x 1024
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
-            GPUResources.buffer.hover = device.createBuffer({
-                size: 256, // ✅ 1x1 + bytesPerRow=256 的最小安全值
-                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-            })
         }
 
-        // debug
         {
             const lon0 = -122.29499816894531;
             const lat0 = 47.575477600097656;
-            window.SCALE = 100000.0;
 
             const invScale = 1.0 / SCALE;  // 0.00001
 
@@ -126,15 +123,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             })
             device.queue.writeBuffer(GPUResources.buffer.debugPos_and_debugNrm, 0, debugPos_and_debugNrm)
-            const debugIds = new Uint32Array([0, 0, 0]);
-            GPUResources.buffer.debugId = device.createBuffer({
-                size: debugIds.byteLength,
-                usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-            });
-            device.queue.writeBuffer(GPUResources.buffer.debugId, 0, debugIds);
         }
-
-        // bindGroupLayout
         {
             GPUResources.bindGroupLayout.global = device.createBindGroupLayout({
                 entries: [
@@ -147,12 +136,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                         binding: 1,
                         visibility: GPUShaderStage.VERTEX,
                         buffer: { type: `read-only-storage` },
-                    },
-                    {
-                        binding: 2,
-                        visibility: GPUShaderStage.FRAGMENT,
-                        buffer: { type: `uniform` },
-                    },
+                    }
                 ]
             })
             GPUResources.bindGroupLayout.model = device.createBindGroupLayout({
@@ -175,7 +159,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             })
         }
 
-        // bindGroup
         {
             GPUResources.bindGroup.global = device.createBindGroup({
                 layout: GPUResources.bindGroupLayout.global,
@@ -190,12 +173,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                         binding: 1,
                         resource: {
                             buffer: GPUResources.buffer.transform,
-                        }
-                    },
-                    {
-                        binding: 2,
-                        resource: {
-                            buffer: GPUResources.buffer.interaction,
                         }
                     }
                 ]
@@ -213,156 +190,25 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             })
         }
 
-        // bufferLayout
         {
-            GPUResources.bufferLayout.vertex = {
-                position: {
-                    arrayStride: 24, // 3 x 4 x 2 bytes = 24 bytes
-                    attributes: [
-                        {
-                            shaderLocation: 0,
-                            offset: 0,
-                            format: `float32x3`,
-                        },
-                        {
-                            shaderLocation: 1,
-                            offset: 12,
-                            format: `float32x3`,
-                        }
-                    ]
-                },
-                id_building: {
-                    arrayStride: 4,
-                    attributes: [
-                        {
-                            shaderLocation: 2,
-                            offset: 0,
-                            format: `uint32`
-                        }
-                    ]
-                }
+            GPUResources.bufferLayout.vertex.position = {
+                arrayStride: 24, // 3 x 4 x 2 bytes = 24 bytes
+                attributes: [
+                    {
+                        shaderLocation: 0,
+                        offset: 0,
+                        format: `float32x3`,
+                    },
+                    {
+                        shaderLocation: 1,
+                        offset: 12,
+                        format: `float32x3`,
+                    }
+                ]
             }
         }
 
-        /* == Texture == */
-        var texture = {
-            MSAA: null,
-            colorAccumulated: null,
-            colorResolved: null,
-            depth: null,
-            alphaAccumulated: null,
-            alphaResolved: null,
-            hover: null,
-        }
-        {
-            texture.MSAA = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: format_canvas,
-                sampleCount: 4,
-                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-            })
-            texture.colorAccumulated = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: format_canvas,
-                sampleCount: 4,
-                usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            })
-            texture.colorResolved = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: format_canvas,
-                sampleCount: 1,
-                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-            })
-            // texture.depth = device.createTexture({
-            //     size: [canvas.width, canvas.height],
-            //     format: `depth24plus`,
-            //     sampleCount: 1,
-            //     usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            // })
-            texture.alphaAccumulated = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: `rgba16float`,
-                sampleCount: 4,
-                usage: GPUTextureUsage.RENDER_ATTACHMENT,
-            })
-            texture.alphaResolved = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: `rgba16float`,
-                sampleCount: 1,
-                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
-            })
-            texture.hover = device.createTexture({
-                size: [canvas.width, canvas.height],
-                format: `r32uint`,
-                usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC
-            })
-        }
-
-        /* == Window Resize == */
-        {
-            resize = () => {
-                const dpr = Math.min(2, window.devicePixelRatio || 1);
-                const w = Math.max(2, Math.floor(canvas.clientWidth * dpr));
-                const h = Math.max(2, Math.floor(canvas.clientHeight * dpr));
-
-                if (canvas.width === w && canvas.height === h) return;
-
-                canvas.width = w;
-                canvas.height = h;
-
-                context.configure({
-                    device: device,
-                    format: format_canvas,
-                    alphaMode: alphaMode,
-                    size: [canvas.width, canvas.height],
-                });
-                console.log(`Canvas size:`, canvas.width, `x`, canvas.height)
-
-                function createDepthTexture(device, canvas) {
-                    return device.createTexture({
-                        size: [canvas.width, canvas.height, 1],
-                        format: 'depth24plus',
-                        usage: GPUTextureUsage.RENDER_ATTACHMENT,
-                    });
-                }
-
-                // 初始化时
-                texture.depth = createDepthTexture(device, canvas);
-
-                // 如果你有 resize() / configure() 逻辑：每次更新 canvas.width/height 后都要：
-                texture.depth?.destroy?.();
-                texture.depth = createDepthTexture(device, canvas);
-
-                if (fov && aspect && near && far) {
-                    console.log(`fov: ${fov}, aspect: ${aspect}, near: ${near}, far: ${far}`)
-                    resizeCamera(fov, aspect, near, far)
-                }
-
-                const w2 = canvas.width;
-                const h2 = canvas.height;
-
-                // depth
-                if (texture.depth) texture.depth.destroy();
-                texture.depth = device.createTexture({
-                    size: [w2, h2],
-                    format: "depth24plus",
-                    usage: GPUTextureUsage.RENDER_ATTACHMENT,
-                });
-
-                // pick r32uint
-                if (texture.hover) texture.hover.destroy();
-                texture.hover = device.createTexture({
-                    size: [w2, h2],
-                    format: "r32uint",
-                    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-                });
-            }
-            addEventListener('resize', resize)
-            resize()
-        }
     }
-
-
 
     /* == Data Writing == */
     let matrix = {}, data_deploy, stats = {
@@ -423,41 +269,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             stats.lastIndex = f.index ?? stats.lastIndex;
         }
         // Preprocess data
-        //// Pool sort (center-first rendering)
-        let centerLon, centerLat
-        console.log(`centerLon: ${centerLon}, centerLat: ${centerLat}`)
-
-        const POOL_TARGET = 100_000_000;     // 池子凑到多少个 building 就 flush 一次（你可调 300~3000）
-        const POOL_MAX_HOLD_MS = 1_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
-
-        let pool = [];
-        let poolLastFlush = performance.now();
-
-        function buildingDist2(msg) {
-            // msg.parts: [ {data:[lon,lat,...], holes, indices}, ... ]
-            const p0 = msg?.parts?.[0];
-            const data = p0?.data;
-            if (!data || data.length < 2) return Number.POSITIVE_INFINITY;
-            const lon = data[0], lat = data[1];
-            const dx = lon - centerLon;
-            const dy = lat - centerLat;
-            return dx * dx + dy * dy;
-        }
-
-        function flushPoolToPending(force = false) {
-            const now = performance.now();
-            const tooLong = (now - poolLastFlush) > POOL_MAX_HOLD_MS;
-
-            if (!force && pool.length < POOL_TARGET && !tooLong) return;
-
-            // sort: near -> far
-            pool.sort((a, b) => a._d2 - b._d2);
-
-            GPUResources.data.pending.push(...pool);
-
-            pool = [];
-            poolLastFlush = now;
-        }
         //// 2D building
         //// only one layer (z = z0), no walls, no ground, no normals.
         const part_flat = (part, z0 = 0) => {
@@ -586,32 +397,52 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 }
             }
         }
-        // Building ID
-        let gpuCounter = 0, nextId = 1;                 // 0 留给“空地”
-        const keyToId = new Map();      // "238093236" 或 "gpu_0" -> u32 id
 
-        // 输入 feature.id.osm（可能是 null/""）
-        // 输出一个字符串 key：要么 "238093236" 要么 "gpu_0"
-        function key_building_get(osmId) {
-            const s = (osmId ?? "").toString().trim();
-            if (s) return s;
-            return `gpu_${gpuCounter++}`;
+        // Pool sort (center-first rendering)
+        let centerLon, centerLat
+        console.log(`centerLon: ${centerLon}, centerLat: ${centerLat}`)
+
+        const POOL_TARGET = 100_000_000;     // 池子凑到多少个 building 就 flush 一次（你可调 300~3000）
+        const POOL_MAX_HOLD_MS = 1_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
+
+        let pool = [];
+        let poolLastFlush = performance.now();
+
+        function buildingDist2(msg) {
+            // msg.parts: [ {data:[lon,lat,...], holes, indices}, ... ]
+            const p0 = msg?.parts?.[0];
+            const data = p0?.data;
+            if (!data || data.length < 2) return Number.POSITIVE_INFINITY;
+            const lon = data[0], lat = data[1];
+            const dx = lon - centerLon;
+            const dy = lat - centerLat;
+            return dx * dx + dy * dy;
         }
 
-        function id_building_get_create(key) {
-            let id = keyToId.get(key);
-            if (id) return id;
-            id = nextId++;
-            keyToId.set(key, id);
-            return id;
+        function flushPoolToPending(force = false) {
+            const now = performance.now();
+            const tooLong = (now - poolLastFlush) > POOL_MAX_HOLD_MS;
+
+            if (!force && pool.length < POOL_TARGET && !tooLong) return;
+
+            // sort: near -> far
+            pool.sort((a, b) => a._d2 - b._d2);
+
+            GPUResources.data.pending.push(...pool);
+
+            pool = [];
+            poolLastFlush = now;
         }
+
         // Deploy data
         let BUILDING_MODE = "extrude";
         data_deploy = (device) => {
             flushPoolToPending(false);
             const BUDGET_MS = 48.0 // ?ms / frame to avoid lag
             const t0 = performance.now()
+            // const maxPerFrame = 200
 
+            // for (let i = 0; i < maxPerFrame && GPUResources.data.pending.length; i++) {
             while (GPUResources.data.pending.length) {
                 if (performance.now() - t0 > BUDGET_MS) {
                     break;
@@ -626,42 +457,17 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                     building.parts = building.parts.map(p => part_extrude(p, 15))
                 }
 
-                const key_building = key_building_get(building?.id?.osm)
-                const id_building = id_building_get_create(key_building)
-
                 for (const part of building.parts) {
-                    // const idArray = new Uint32Array(part.meta.vertexCount)
-                    const vertexCountReal = (part.positions_and_normals.byteLength / 24) | 0;
-                    const idArray = new Uint32Array(vertexCountReal)
-                    const indexArray = new Uint32Array(part.indices.length)
-                    idArray.fill(id_building)
 
+                    const indexArray = new Uint32Array(part.indices.length)
                     for (let i = 0; i < part.indices.length; i++) {
                         indexArray[i] = part.indices[i] + (GPUResources.data.rendering.vertexByteOffset / 24) | 0
                     }
 
-                    device.queue.writeBuffer(
-                        GPUResources.buffer.vertex,
-                        GPUResources.data.rendering.vertexByteOffset,
-                        part.positions_and_normals
-                    )
-                    const vc = part.positions_and_normals.length / 24; // 24 bytes per vertex = 6 floats
-                    if (part.meta?.vertexCount !== undefined && part.meta.vertexCount !== vertexCountReal) {
-                        console.warn("vertexCount mismatch", vertexCountReal, part.meta.vertexCount, part.meta);
-                    }
-                    device.queue.writeBuffer(
-                        GPUResources.buffer.vertexId,
-                        GPUResources.data.rendering.vertexIdByteOffset,
-                        idArray
-                    )
-                    device.queue.writeBuffer(
-                        GPUResources.buffer.indices,
-                        GPUResources.data.rendering.indexByteOffset,
-                        indexArray
-                    )
+                    device.queue.writeBuffer(GPUResources.buffer.vertex, GPUResources.data.rendering.vertexByteOffset, part.positions_and_normals)
+                    device.queue.writeBuffer(GPUResources.buffer.indices, GPUResources.data.rendering.indexByteOffset, indexArray)
 
                     GPUResources.data.rendering.vertexByteOffset += part.positions_and_normals.byteLength
-                    GPUResources.data.rendering.vertexIdByteOffset += idArray.byteLength
                     GPUResources.data.rendering.indexByteOffset += indexArray.byteLength
                 }
 
@@ -681,24 +487,22 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 processed: stats.processed,
                 errors: stats.errors,
                 lastIndex: stats.lastIndex,
+                // vMB: (GPUResources.data.rendering.vertexByteOffset / 1024 / 1024).toFixed(1),
+                // iMB: (GPUResources.data.rendering.indexByteOffset / 1024 / 1024).toFixed(1),
+                // indexCount: (R.indexByteOffset / 4) | 0,
             });
         }, 1000);
 
         /* === Camera/Transform Data === */
+        let fov, aspect, near, far
         {
             {
                 fov = 30 * Math.PI / 180
                 aspect = canvas.width / canvas.height
-                near = 0.1;
+                near = 0.00001;
                 far = 60000.0;
                 matrix.projection = mat4.create()
-                mat4.perspectiveZO(matrix.projection, fov, aspect, near, far)
-                resizeCamera = (fov, aspect, near, far) => {
-                    aspect = canvas.width / canvas.height;
-                    mat4.perspectiveZO(matrix.projection, fov, aspect, near, far)
-
-                    device.queue.writeBuffer(GPUResources.buffer.camera, 0, matrix.projection);
-                }
+                mat4.perspective(matrix.projection, fov, aspect, near, far)
             }
             let dist, eye, target, up
             {
@@ -759,7 +563,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         path: {
             vertex: `./shader/vertex.wgsl`,
             fragment: `./shader/fragment.wgsl`,
-            interaction: `./shader/interaction.wgsl`,
         },
         module: {}
     }
@@ -776,12 +579,53 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 .then(res => res.ok ? res.text() : ``)
                 .catch(() => ``),
         })
+    }
 
-        shader.module.interaction = device.createShaderModule({
-            label: `Interaction Shader Module`,
-            code: await fetch(shader.path.interaction)
-                .then(res => res.ok ? res.text() : ``)
-                .catch(() => ``),
+    /* == Texture == */
+    let texture = {
+        MSAA: null,
+        colorAccumulated: null,
+        colorResolved: null,
+        depth: null,
+        alphaAccumulated: null,
+        alphaResolved: null
+    }
+    {
+        texture.MSAA = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: format_canvas,
+            sampleCount: 4,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        })
+        texture.colorAccumulated = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: format_canvas,
+            sampleCount: 4,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        })
+        texture.colorResolved = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: format_canvas,
+            sampleCount: 1,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+        })
+        texture.depth = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: `depth24plus`,
+            sampleCount: 1,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        })
+        texture.alphaAccumulated = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: `rgba16float`,
+            sampleCount: 4,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        })
+        texture.alphaResolved = device.createTexture({
+            size: [canvas.width, canvas.height],
+            format: `rgba16float`,
+            sampleCount: 1,
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
         })
     }
 
@@ -789,7 +633,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         GPUResources.pipelineLayout = device.createPipelineLayout({
             bindGroupLayouts: [
                 GPUResources.bindGroupLayout.global,
-                // GPUResources.bindGroupLayout.interaction
             ]
         })
     }
@@ -802,7 +645,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 entryPoint: `vertexMain`,
                 buffers: [
                     GPUResources.bufferLayout.vertex.position,
-                    GPUResources.bufferLayout.vertex.id_building,
                 ]
             },
             fragment: {
@@ -810,51 +652,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 entryPoint: `fragmentMain`,
                 targets: [{ format: format_canvas }]
             },
-            primitive: {
-                topology: `triangle-list`,
-                frontFace: 'cw',   // ✅ 关键
-                cullMode: 'back',
-            },
-            depthStencil: {
-                format: `depth24plus`,
-                depthWriteEnabled: true,
-                depthCompare: `less`,
-            },
             multisample: {
                 count: 1
             },
         })
-        GPUResources.renderPipeline.interaction = device.createRenderPipeline({
-            layout: GPUResources.pipelineLayout,
-            vertex: {
-                module: shader.module.interaction,
-                entryPoint: `vertexMain`,
-                buffers: [
-                    GPUResources.bufferLayout.vertex.position,
-                    GPUResources.bufferLayout.vertex.id_building,
-                ]
-            },
-            fragment: {
-                module: shader.module.interaction,
-                entryPoint: `fragmentMain`,
-                targets: [{
-                    format: `r32uint`
-                }]
-            },
-            primitive: {
-                topology: `triangle-list`,
-                frontFace: 'cw',   // ✅ 关键
-                cullMode: 'back',
-            },
-            depthStencil: {
-                format: `depth24plus`,
-                depthWriteEnabled: true,
-                depthCompare: `less`,
-            }
-        })
-    }
 
-    {
         ready.GPU = true
     }
 
@@ -900,7 +702,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             return 1.0 + (0.05 - 1.0) * t;
         }
 
-        // -------- Event --------
+        // -------- Events --------
         canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
         canvas.addEventListener("mousemove", (e) => {
@@ -960,105 +762,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         };
     })();
 
-    /* == Interaction == */
-    let mouseX = 0, mouseY = 0, hovered = 0, id_last_hover = 0, pending = false
-    {
-        canvas.addEventListener("mousemove", (e) => {
-            const r = canvas.getBoundingClientRect();
-            mouseX = (e.clientX - r.left) / r.width;
-            mouseY = (e.clientY - r.top) / r.height;
-            // console.log(`mouseX: ${mouseX}, mouseY: ${mouseY}`)
-        })
-
-        canvas.addEventListener('mouseleave', () => {
-            hovered = 0;
-        });
-
-        let id_selected = 0;
-        const hover = async (px, py) => {
-            if (GPUResources.data.rendering.indexByteOffset <= 0) {
-                id_selected = 0;
-                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, new Uint32Array([id_selected, 0, 0, 0]));
-                return;
-            }
-
-            const encoder = device.createCommandEncoder()
-
-            const renderPass = encoder.beginRenderPass({
-                colorAttachments: [{
-                    view: texture.hover.createView(),
-                    loadOp: `clear`,
-                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                    storeOp: `store`,
-                }],
-                depthStencilAttachment: {
-                    view: texture.depth.createView(),
-                    depthLoadOp: `clear`,
-                    depthClearValue: 1.0,
-                    depthStoreOp: `store`,
-                }
-            })
-
-            renderPass.setPipeline(GPUResources.renderPipeline.interaction)
-            renderPass.setBindGroup(0, GPUResources.bindGroup.global)
-            renderPass.setVertexBuffer(0, GPUResources.buffer.vertex)
-            renderPass.setVertexBuffer(1, GPUResources.buffer.vertexId)
-            renderPass.setIndexBuffer(GPUResources.buffer.indices, `uint32`)
-            renderPass.drawIndexed(GPUResources.data.rendering.indexByteOffset / 4, 1, 0, 0, 0);
-            renderPass.end()
-
-            encoder.copyTextureToBuffer(
-                {
-                    texture: texture.hover,
-                    origin: { x: px, y: py }
-                },
-                {
-                    buffer: GPUResources.buffer.hover,
-                    bytesPerRow: 256
-                },
-                {
-                    width: 1,
-                    height: 1,
-                    depthOrArrayLayers: 1
-                }
-            )
-
-            device.queue.submit([encoder.finish()])
-            await GPUResources.buffer.hover.mapAsync(GPUMapMode.READ)
-            const copy = GPUResources.buffer.hover.getMappedRange(0, 4)
-            id_selected = new Uint32Array(copy)[0] >>> 0
-            GPUResources.buffer.hover.unmap()
-            const interactionU32 = new Uint32Array(4)
-            interactionU32[0] = id_selected;
-            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
-
-            id_last_hover = id_selected
-            // pending = false
-            return id_selected
-        }
-
-        window.interaction = async (time) => {
-
-            if (mouseX < 0 || mouseX > 1 || mouseY < 0 || mouseY > 1) {
-                interactionU32[0] = 0;
-                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
-                return;
-            }
-
-            const px = Math.floor(mouseX * canvas.width)
-            const py = Math.floor(mouseY * canvas.height)
-
-            const id = await hover(px, py)
-
-            const data_interaction = new Uint32Array(4)
-            data_interaction[0] = id
-            console.log(`id: ${id}`)
-            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, data_interaction)
-        }
-    }
-
-
-
     /* == Render Loop == */
     const render = () => {
         if (!ready.GPU || !ready.buildings) return
@@ -1069,17 +772,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             colorAttachments: [
                 {
                     view: context.getCurrentTexture().createView(),
-                    loadOp: "clear",
+                    loadOp: "load",
                     clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
                     storeOp: "store",
                 }
             ],
-            depthStencilAttachment: {
-                view: texture.depth.createView(),
-                depthLoadOp: `clear`,
-                depthClearValue: 1.0,
-                depthStoreOp: `store`,
-            }
         });
 
         renderPass.setPipeline(GPUResources.renderPipeline.model)
@@ -1087,25 +784,18 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         // debug triangle
         renderPass.setVertexBuffer(0, GPUResources.buffer.debugPos_and_debugNrm)
-        renderPass.setVertexBuffer(1, GPUResources.buffer.debugId);
-
         renderPass.draw(3, 1, 0, 0)
 
         if (PAUSE_RENDER == false && GPUResources.data.rendering.indexByteOffset > 0) {
             renderPass.setVertexBuffer(0, GPUResources.buffer.vertex)
-            renderPass.setVertexBuffer(1, GPUResources.buffer.vertexId)
             renderPass.setIndexBuffer(GPUResources.buffer.indices, `uint32`)
-            if (!window.__once) {
-                window.__once = true;
-                console.log("indexByteOffset=", GPUResources.data.rendering.indexByteOffset);
-                console.log("indexCount=", (GPUResources.data.rendering.indexByteOffset / 4) | 0);
-                console.log("vertexByteOffset=", GPUResources.data.rendering.vertexByteOffset);
-                console.log("vertexIdByteOffset=", GPUResources.data.rendering.vertexIdByteOffset);
-            }
             renderPass.drawIndexed(GPUResources.data.rendering.indexByteOffset / 4, 1, 0, 0, 0)
         }
 
         renderPass.end()
+
+        // Camera Control
+        camera(mat4, GPUResources, device, matrix);
 
         device.queue.submit([encoder.finish()])
     }
@@ -1117,9 +807,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         deltaTime = (now - lastTime) / 1000
         lastTime = now
         data_deploy(device)
-        camera(mat4, GPUResources, device, matrix);
-        await interaction(deltaTime)
+
         render(deltaTime)
+
         requestAnimationFrame(frame)
     }
     frame()

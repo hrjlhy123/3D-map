@@ -1,0 +1,753 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>WebGPU BIG Fog Glow (2-level bloom, very low-res)</title>
+        <style>
+    html, body { margin: 0; height: 100%; background:#0b0f14; }
+    canvas { display:block; width: 100vw; height: 100vh; }
+  </style>
+    </head>
+    <body>
+        <canvas id="c"></canvas>
+
+        <script type="module">
+/* ================== Tiny math (column-major) ================== */
+function mat4Mul(a,b){
+  const o = new Float32Array(16);
+  for (let c=0;c<4;c++){
+    for (let r=0;r<4;r++){
+      o[c*4+r] =
+        a[0*4+r]*b[c*4+0] +
+        a[1*4+r]*b[c*4+1] +
+        a[2*4+r]*b[c*4+2] +
+        a[3*4+r]*b[c*4+3];
+    }
+  }
+  return o;
+}
+function mat4Perspective(fovy, aspect, near, far){
+  const f = 1 / Math.tan(fovy/2);
+  const nf = 1 / (near - far);
+  const o = new Float32Array(16);
+  o[0] = f/aspect; o[1]=0; o[2]=0; o[3]=0;
+  o[4] = 0; o[5]=f; o[6]=0; o[7]=0;
+  o[8] = 0; o[9]=0; o[10]=(far+near)*nf; o[11]=-1;
+  o[12]=0; o[13]=0; o[14]=(2*far*near)*nf; o[15]=0;
+  return o;
+}
+function mat4LookAt(eye, center, up){
+  const fx = center[0]-eye[0], fy = center[1]-eye[1], fz = center[2]-eye[2];
+  let fl = Math.hypot(fx,fy,fz); const f=[fx/fl, fy/fl, fz/fl];
+  const sx = f[1]*up[2]-f[2]*up[1], sy = f[2]*up[0]-f[0]*up[2], sz = f[0]*up[1]-f[1]*up[0];
+  let sl = Math.hypot(sx,sy,sz); const s=[sx/sl, sy/sl, sz/sl];
+  const u=[ s[1]*f[2]-s[2]*f[1], s[2]*f[0]-s[0]*f[2], s[0]*f[1]-s[1]*f[0] ];
+  const o = new Float32Array(16);
+  o[0]=s[0]; o[1]=u[0]; o[2]=-f[0]; o[3]=0;
+  o[4]=s[1]; o[5]=u[1]; o[6]=-f[1]; o[7]=0;
+  o[8]=s[2]; o[9]=u[2]; o[10]=-f[2]; o[11]=0;
+  o[12]=-(s[0]*eye[0]+s[1]*eye[1]+s[2]*eye[2]);
+  o[13]=-(u[0]*eye[0]+u[1]*eye[1]+u[2]*eye[2]);
+  o[14]= (f[0]*eye[0]+f[1]*eye[1]+f[2]*eye[2]);
+  o[15]=1;
+  return o;
+}
+function mat4RotateY(rad){
+  const c=Math.cos(rad), s=Math.sin(rad);
+  return new Float32Array([
+     c,0, s,0,
+     0,1, 0,0,
+    -s,0, c,0,
+     0,0, 0,1
+  ]);
+}
+function mat4RotateX(rad){
+  const c=Math.cos(rad), s=Math.sin(rad);
+  return new Float32Array([
+    1,0,0,0,
+    0, c,-s,0,
+    0, s, c,0,
+    0,0,0,1
+  ]);
+}
+function mat4Invert(m){
+  const a=m, inv=new Float32Array(16);
+  inv[0]=a[5]*a[10]*a[15]-a[5]*a[11]*a[14]-a[9]*a[6]*a[15]+a[9]*a[7]*a[14]+a[13]*a[6]*a[11]-a[13]*a[7]*a[10];
+  inv[4]=-a[4]*a[10]*a[15]+a[4]*a[11]*a[14]+a[8]*a[6]*a[15]-a[8]*a[7]*a[14]-a[12]*a[6]*a[11]+a[12]*a[7]*a[10];
+  inv[8]=a[4]*a[9]*a[15]-a[4]*a[11]*a[13]-a[8]*a[5]*a[15]+a[8]*a[7]*a[13]+a[12]*a[5]*a[11]-a[12]*a[7]*a[9];
+  inv[12]=-a[4]*a[9]*a[14]+a[4]*a[10]*a[13]+a[8]*a[5]*a[14]-a[8]*a[6]*a[13]-a[12]*a[5]*a[10]+a[12]*a[6]*a[9];
+  inv[1]=-a[1]*a[10]*a[15]+a[1]*a[11]*a[14]+a[9]*a[2]*a[15]-a[9]*a[3]*a[14]-a[13]*a[2]*a[11]+a[13]*a[3]*a[10];
+  inv[5]=a[0]*a[10]*a[15]-a[0]*a[11]*a[14]-a[8]*a[2]*a[15]+a[8]*a[3]*a[14]+a[12]*a[2]*a[11]-a[12]*a[3]*a[10];
+  inv[9]=-a[0]*a[9]*a[15]+a[0]*a[11]*a[13]+a[8]*a[1]*a[15]-a[8]*a[3]*a[13]-a[12]*a[1]*a[11]+a[12]*a[3]*a[9];
+  inv[13]=a[0]*a[9]*a[14]-a[0]*a[10]*a[13]-a[8]*a[1]*a[14]+a[8]*a[2]*a[13]+a[12]*a[1]*a[10]-a[12]*a[2]*a[9];
+  inv[2]=a[1]*a[6]*a[15]-a[1]*a[7]*a[14]-a[5]*a[2]*a[15]+a[5]*a[3]*a[14]+a[13]*a[2]*a[7]-a[13]*a[3]*a[6];
+  inv[6]=-a[0]*a[6]*a[15]+a[0]*a[7]*a[14]+a[4]*a[2]*a[15]-a[4]*a[3]*a[14]-a[12]*a[2]*a[7]+a[12]*a[3]*a[6];
+  inv[10]=a[0]*a[5]*a[15]-a[0]*a[7]*a[13]-a[4]*a[1]*a[15]+a[4]*a[3]*a[13]+a[12]*a[1]*a[7]-a[12]*a[3]*a[5];
+  inv[14]=-a[0]*a[5]*a[14]+a[0]*a[6]*a[13]+a[4]*a[1]*a[14]-a[4]*a[2]*a[13]-a[12]*a[1]*a[6]+a[12]*a[2]*a[5];
+  inv[3]=-a[1]*a[6]*a[11]+a[1]*a[7]*a[10]+a[5]*a[2]*a[11]-a[5]*a[3]*a[10]-a[9]*a[2]*a[7]+a[9]*a[3]*a[6];
+  inv[7]=a[0]*a[6]*a[11]-a[0]*a[7]*a[10]-a[4]*a[2]*a[11]+a[4]*a[3]*a[10]+a[8]*a[2]*a[7]-a[8]*a[3]*a[6];
+  inv[11]=-a[0]*a[5]*a[11]+a[0]*a[7]*a[9]+a[4]*a[1]*a[11]-a[4]*a[3]*a[9]-a[8]*a[1]*a[7]+a[8]*a[3]*a[5];
+  inv[15]=a[0]*a[5]*a[10]-a[0]*a[6]*a[9]-a[4]*a[1]*a[10]+a[4]*a[2]*a[9]+a[8]*a[1]*a[6]-a[8]*a[2]*a[5];
+  let det=a[0]*inv[0]+a[1]*inv[4]+a[2]*inv[8]+a[3]*inv[12];
+  if(!det) return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  det=1/det;
+  for(let i=0;i<16;i++) inv[i]*=det;
+  return inv;
+}
+function mulMat4Vec4(m,v){
+  return [
+    m[0]*v[0]+m[4]*v[1]+m[8]*v[2]+m[12]*v[3],
+    m[1]*v[0]+m[5]*v[1]+m[9]*v[2]+m[13]*v[3],
+    m[2]*v[0]+m[6]*v[1]+m[10]*v[2]+m[14]*v[3],
+    m[3]*v[0]+m[7]*v[1]+m[11]*v[2]+m[15]*v[3],
+  ];
+}
+function vec3Normalize(v){
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0]/l, v[1]/l, v[2]/l];
+}
+function rayAabbHit(ro, rd, bmin, bmax){
+  let tmin = -Infinity, tmax = Infinity;
+  for (let i=0;i<3;i++){
+    const invD = 1 / (rd[i] || 1e-12);
+    let t0 = (bmin[i] - ro[i]) * invD;
+    let t1 = (bmax[i] - ro[i]) * invD;
+    if (t0 > t1) [t0, t1] = [t1, t0];
+    tmin = Math.max(tmin, t0);
+    tmax = Math.min(tmax, t1);
+    if (tmax < tmin) return false;
+  }
+  return tmax >= Math.max(tmin, 0);
+}
+
+/* ================== WebGPU bootstrap ================== */
+if (!navigator.gpu) throw new Error("WebGPU not supported");
+const canvas = document.getElementById("c");
+const adapter = await navigator.gpu.requestAdapter();
+const device = await adapter.requestDevice();
+const ctx = canvas.getContext("webgpu");
+const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+ctx.configure({ device, format: canvasFormat, alphaMode: "opaque" });
+
+/* ================== Textures ================== */
+let W=0,H=0;
+let sceneTex, sceneView, sceneDepth;
+
+// Level0: 1/12
+let GW0=0, GH0=0;
+let mask0Tex, mask0View, mask0Depth;
+let blur0Tex, blur0View;
+let glow0Tex, glow0View;
+
+// Level1: 1/24 (downsample from glow0)
+let GW1=0, GH1=0;
+let ds1Tex, ds1View;      // downsample target
+let blur1Tex, blur1View;
+let glow1Tex, glow1View;
+
+let bgBlur0H=null, bgBlur0V=null, bgDownsample=null, bgBlur1H=null, bgBlur1V=null, bgComposite=null;
+
+function makeColorTex(w,h, format="rgba8unorm"){
+  return device.createTexture({
+    size: { width: w, height: h },
+    format,
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+  });
+}
+function makeDepthTex(w,h){
+  return device.createTexture({
+    size: { width: w, height: h },
+    format: "depth24plus",
+    usage: GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+}
+
+function recreateTargets(){
+  const dpr = Math.max(1, window.devicePixelRatio || 1);
+  const w = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+  const h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width=w; canvas.height=h; }
+  if (W===w && H===h) return;
+
+  W=w; H=h;
+
+  // ✅ 超夸张：1/12 + 1/24
+  GW0 = Math.max(1, (W/6)|0);
+  GH0 = Math.max(1, (H/6)|0);
+  GW1 = Math.max(1, (W/12)|0);
+  GH1 = Math.max(1, (H/12)|0);
+
+  sceneTex?.destroy?.(); sceneDepth?.destroy?.();
+  mask0Tex?.destroy?.(); mask0Depth?.destroy?.();
+  blur0Tex?.destroy?.(); glow0Tex?.destroy?.();
+  ds1Tex?.destroy?.(); blur1Tex?.destroy?.(); glow1Tex?.destroy?.();
+
+  sceneTex = makeColorTex(W,H);
+  sceneView = sceneTex.createView();
+  sceneDepth = makeDepthTex(W,H);
+
+  mask0Tex = makeColorTex(GW0, GH0);
+  mask0View = mask0Tex.createView();
+  mask0Depth = makeDepthTex(GW0, GH0);
+
+  blur0Tex = makeColorTex(GW0, GH0);
+  blur0View = blur0Tex.createView();
+  glow0Tex = makeColorTex(GW0, GH0);
+  glow0View = glow0Tex.createView();
+
+  ds1Tex = makeColorTex(GW1, GH1);
+  ds1View = ds1Tex.createView();
+  blur1Tex = makeColorTex(GW1, GH1);
+  blur1View = blur1Tex.createView();
+  glow1Tex = makeColorTex(GW1, GH1);
+  glow1View = glow1Tex.createView();
+
+  bgBlur0H = bgBlur0V = bgDownsample = bgBlur1H = bgBlur1V = bgComposite = null;
+}
+
+/* ================== Cube geometry ================== */
+const S=0.8;
+const verts = new Float32Array([
+  -S,-S, S,  0,0,1,   S,-S, S,  0,0,1,   S, S, S,  0,0,1,  -S, S, S,  0,0,1,
+   S,-S,-S,  0,0,-1, -S,-S,-S, 0,0,-1, -S, S,-S, 0,0,-1,  S, S,-S, 0,0,-1,
+   S,-S, S,  1,0,0,   S,-S,-S, 1,0,0,   S, S,-S, 1,0,0,   S, S, S, 1,0,0,
+  -S,-S,-S, -1,0,0,  -S,-S, S,-1,0,0,  -S, S, S,-1,0,0,  -S, S,-S,-1,0,0,
+  -S, S, S,  0,1,0,   S, S, S, 0,1,0,   S, S,-S, 0,1,0,  -S, S,-S, 0,1,0,
+  -S,-S,-S,  0,-1,0,  S,-S,-S,0,-1,0,  S,-S, S,0,-1,0,  -S,-S, S,0,-1,0,
+]);
+const idx = new Uint16Array([
+  0,1,2, 0,2,3,
+  4,5,6, 4,6,7,
+  8,9,10, 8,10,11,
+  12,13,14, 12,14,15,
+  16,17,18, 16,18,19,
+  20,21,22, 20,22,23
+]);
+const vb = device.createBuffer({ size: verts.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(vb,0,verts);
+const ib = device.createBuffer({ size: idx.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+device.queue.writeBuffer(ib,0,idx);
+
+/* ================== Uniforms ================== */
+/*
+  cubeUni:
+    mvp(16) model(16) camPos(4) color(4) params(4)
+  params: x=fresnelK, y=BOOST, z=unused, w=unused
+*/
+const cubeUniform = device.createBuffer({ size: 176, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+/*
+  blurUni:
+    dir(2) texel(2) intensity(1) radiusScale(1)  (32 bytes)
+*/
+const blurUniform = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+
+/* ================== Shaders ================== */
+const cubeShader = device.createShaderModule({
+  code: /* wgsl */`
+struct Uni {
+  mvp: mat4x4<f32>,
+  model: mat4x4<f32>,
+  camPos: vec4<f32>,
+  color: vec4<f32>,
+  params: vec4<f32>, // x=fresnelK, y=boost
+}
+@group(0) @binding(0) var<uniform> uni: Uni;
+
+struct VSIn { @location(0) pos: vec3<f32>, @location(1) nrm: vec3<f32> }
+struct VSOut {
+  @builtin(position) Position: vec4<f32>,
+  @location(0) worldPos: vec3<f32>,
+  @location(1) worldNrm: vec3<f32>,
+}
+
+@vertex
+fn vs_main(v: VSIn) -> VSOut {
+  var o: VSOut;
+  let wp = uni.model * vec4<f32>(v.pos, 1.0);
+  let wn = uni.model * vec4<f32>(v.nrm, 0.0);
+  o.Position = uni.mvp * vec4<f32>(v.pos, 1.0);
+  o.worldPos = wp.xyz;
+  o.worldNrm = normalize(wn.xyz);
+  return o;
+}
+
+@fragment
+fn fs_lit(i: VSOut) -> @location(0) vec4<f32> {
+  let N = normalize(i.worldNrm);
+  let L = normalize(vec3<f32>(0.35, 0.85, 0.25));
+  let ndl = max(dot(N, L), 0.0);
+  let ambient = 0.25;
+  let diff = ambient + 0.9 * ndl;
+  return vec4<f32>(uni.color.rgb * diff, 1.0);
+}
+
+// ✅ 极强能量的“边缘能量源”：先 Fresnel，再乘 boost，再 clamp
+@fragment
+fn fs_mask_bigfog(i: VSOut) -> @location(0) vec4<f32> {
+  let N = normalize(i.worldNrm);
+  let V = normalize(uni.camPos.xyz - i.worldPos);
+  var e = pow(1.0 - abs(dot(N, V)), uni.params.x); // fresnel
+  e = clamp(e * uni.params.y, 0.0, 1.0);           // BIG boost
+  // 再让它更“奶油雾”：把边缘能量拉成更平滑的大块
+  e = smoothstep(0.0, 0.6, e);
+  return vec4<f32>(e, e, e, 1.0);
+}
+`
+});
+
+const postShader = device.createShaderModule({
+  code: /* wgsl */`
+struct Uni {
+  dir_texel: vec4<f32>,   // xy = dir, zw = texel
+  params: vec4<f32>,      // x = intensity, y = radiusScale (其余 padding)
+}
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var srcTex: texture_2d<f32>;
+@group(0) @binding(2) var<uniform> u: Uni;
+
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex
+fn vs_full(@builtin(vertex_index) vid: u32) -> VOut {
+  var p = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var o: VOut;
+  o.pos = vec4<f32>(p[vid], 0.0, 1.0);
+  o.uv = o.pos.xy * 0.5 + vec2<f32>(0.5);
+  return o;
+}
+
+// ✅ 17tap blur（半径用 radiusScale 放大到很夸张）
+@fragment
+fn fs_blur(i: VOut) -> @location(0) vec4<f32> {
+  let dir = u.dir_texel.xy;
+  let texel = u.dir_texel.zw;
+  let radiusScale = u.params.y;
+  let off = dir * texel * radiusScale;
+
+  let w0 = 0.134598;
+  let w1 = 0.127325;
+  let w2 = 0.107778;
+  let w3 = 0.081638;
+  let w4 = 0.055335;
+  let w5 = 0.033562;
+  let w6 = 0.018216;
+  let w7 = 0.008846;
+  let w8 = 0.003851;
+
+  var c = textureSample(srcTex, samp, i.uv) * w0;
+  c += textureSample(srcTex, samp, i.uv + off * 1.0) * w1;
+  c += textureSample(srcTex, samp, i.uv - off * 1.0) * w1;
+  c += textureSample(srcTex, samp, i.uv + off * 2.0) * w2;
+  c += textureSample(srcTex, samp, i.uv - off * 2.0) * w2;
+  c += textureSample(srcTex, samp, i.uv + off * 3.0) * w3;
+  c += textureSample(srcTex, samp, i.uv - off * 3.0) * w3;
+  c += textureSample(srcTex, samp, i.uv + off * 4.0) * w4;
+  c += textureSample(srcTex, samp, i.uv - off * 4.0) * w4;
+  c += textureSample(srcTex, samp, i.uv + off * 5.0) * w5;
+  c += textureSample(srcTex, samp, i.uv - off * 5.0) * w5;
+  c += textureSample(srcTex, samp, i.uv + off * 6.0) * w6;
+  c += textureSample(srcTex, samp, i.uv - off * 6.0) * w6;
+  c += textureSample(srcTex, samp, i.uv + off * 7.0) * w7;
+  c += textureSample(srcTex, samp, i.uv - off * 7.0) * w7;
+  c += textureSample(srcTex, samp, i.uv + off * 8.0) * w8;
+  c += textureSample(srcTex, samp, i.uv - off * 8.0) * w8;
+  return c;
+}
+
+// ✅ downsample：只是把输入 texture sample 到更小 RT（线性采样会自然做一点过滤）
+@fragment
+fn fs_downsample(i: VOut) -> @location(0) vec4<f32> {
+  return textureSample(srcTex, samp, i.uv);
+}
+`
+});
+
+const compositeShader = device.createShaderModule({
+  code: /* wgsl */`
+struct Uni {
+  _a: vec2<f32>,
+  _b: vec2<f32>,
+  intensity: f32,
+  _pad: f32,
+}
+
+@group(0) @binding(0) var samp: sampler;
+@group(0) @binding(1) var sceneTex: texture_2d<f32>;
+@group(0) @binding(2) var glow0: texture_2d<f32>;
+@group(0) @binding(3) var glow1: texture_2d<f32>;
+@group(0) @binding(4) var<uniform> u: Uni;
+
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+
+@vertex
+fn vs_full(@builtin(vertex_index) vid: u32) -> VOut {
+  var p = array<vec2<f32>, 3>(
+    vec2<f32>(-1.0, -1.0),
+    vec2<f32>( 3.0, -1.0),
+    vec2<f32>(-1.0,  3.0)
+  );
+  var o: VOut;
+  o.pos = vec4<f32>(p[vid], 0.0, 1.0);
+  o.uv = o.pos.xy * 0.5 + vec2<f32>(0.5);
+  return o;
+}
+
+@fragment
+fn fs_composite(i: VOut) -> @location(0) vec4<f32> {
+  let scene = textureSample(sceneTex, samp, i.uv);
+
+  // 两层雾：L0(1/12) + L1(1/24)
+  let g0 = textureSample(glow0, samp, i.uv).r;
+  let g1 = textureSample(glow1, samp, i.uv).r;
+
+  // ✅ 超夸张：大雾团主要来自 g1
+  let fog = (g0 * 1.2 + g1 * 3.5) * u.intensity;
+
+  // 雾颜色偏白粉（更像“烟雾光团”）
+  let fogColor = vec3<f32>(1.0, 0.78, 0.78);
+
+  // 强 add，并做一点 soft clip 防止全屏白
+  let rgb0 = scene.rgb + fogColor * fog;
+  let rgb = rgb0 / (vec3<f32>(1.0) + rgb0); // cheap tonemap
+  return vec4<f32>(rgb, 1.0);
+}
+`
+});
+
+/* ================== Pipelines ================== */
+// cube
+const cubeBGL = device.createBindGroupLayout({
+  entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } }]
+});
+const cubeLayout = device.createPipelineLayout({ bindGroupLayouts: [cubeBGL] });
+const cubeBG = device.createBindGroup({ layout: cubeBGL, entries: [{ binding: 0, resource: { buffer: cubeUniform } }] });
+const vLayout = {
+  arrayStride: 24,
+  attributes: [
+    { shaderLocation: 0, offset: 0, format: "float32x3" },
+    { shaderLocation: 1, offset: 12, format: "float32x3" },
+  ]
+};
+const cubeLitPipeline = device.createRenderPipeline({
+  layout: cubeLayout,
+  vertex: { module: cubeShader, entryPoint: "vs_main", buffers: [vLayout] },
+  fragment: { module: cubeShader, entryPoint: "fs_lit", targets: [{ format: "rgba8unorm" }] },
+  primitive: { topology: "triangle-list", cullMode: "back" },
+  depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+});
+const cubeMaskPipeline = device.createRenderPipeline({
+  layout: cubeLayout,
+  vertex: { module: cubeShader, entryPoint: "vs_main", buffers: [vLayout] },
+  fragment: { module: cubeShader, entryPoint: "fs_mask_bigfog", targets: [{ format: "rgba8unorm" }] },
+  primitive: { topology: "triangle-list", cullMode: "back" },
+  depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" },
+});
+
+// post (blur/downsample)
+const postBGL = device.createBindGroupLayout({
+  entries: [
+    { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+    { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
+    { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+  ]
+});
+const postLayout = device.createPipelineLayout({ bindGroupLayouts: [postBGL] });
+const blurPipeline = device.createRenderPipeline({
+  layout: postLayout,
+  vertex: { module: postShader, entryPoint: "vs_full" },
+  fragment: { module: postShader, entryPoint: "fs_blur", targets: [{ format: "rgba8unorm" }] },
+  primitive: { topology: "triangle-list" },
+});
+const downsamplePipeline = device.createRenderPipeline({
+  layout: postLayout,
+  vertex: { module: postShader, entryPoint: "vs_full" },
+  fragment: { module: postShader, entryPoint: "fs_downsample", targets: [{ format: "rgba8unorm" }] },
+  primitive: { topology: "triangle-list" },
+});
+
+// composite
+const compBGL = device.createBindGroupLayout({
+  entries: [
+    { binding: 0, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "filtering" } },
+    { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }, // scene
+    { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }, // glow0
+    { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } }, // glow1
+    { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
+  ]
+});
+const compLayout = device.createPipelineLayout({ bindGroupLayouts: [compBGL] });
+const compositePipeline = device.createRenderPipeline({
+  layout: compLayout,
+  vertex: { module: compositeShader, entryPoint: "vs_full" },
+  fragment: { module: compositeShader, entryPoint: "fs_composite", targets: [{ format: canvasFormat }] },
+  primitive: { topology: "triangle-list" },
+});
+
+const sampler = device.createSampler({ magFilter:"linear", minFilter:"linear" });
+
+function makePostBG(srcView){
+  return device.createBindGroup({
+    layout: postBGL,
+    entries: [
+      { binding: 0, resource: sampler },
+      { binding: 1, resource: srcView },
+      { binding: 2, resource: { buffer: blurUniform } },
+    ]
+  });
+}
+const compUniform = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+function makeCompBG(){
+  return device.createBindGroup({
+    layout: compBGL,
+    entries: [
+      { binding: 0, resource: sampler },
+      { binding: 1, resource: sceneView },
+      { binding: 2, resource: glow0View },
+      { binding: 3, resource: glow1View },
+      { binding: 4, resource: { buffer: compUniform } },
+    ]
+  });
+}
+
+/* ================== Mouse / picking ================== */
+let mouseClientX=null, mouseClientY=null;
+canvas.addEventListener("mousemove", e=>{ mouseClientX=e.clientX; mouseClientY=e.clientY; });
+canvas.addEventListener("mouseleave", ()=>{ mouseClientX=null; mouseClientY=null; });
+
+function getRayWorldFromMouse(clientX, clientY, invViewProj){
+  const rect = canvas.getBoundingClientRect();
+  const x = (clientX - rect.left) / rect.width;
+  const y = (clientY - rect.top) / rect.height;
+  const ndcX = x*2-1;
+  const ndcY = (1-y)*2-1;
+
+  const pNear = mulMat4Vec4(invViewProj, [ndcX, ndcY, 0, 1]);
+  const pFar  = mulMat4Vec4(invViewProj, [ndcX, ndcY, 1, 1]);
+
+  const nearW = 1 / pNear[3];
+  const farW  = 1 / pFar[3];
+  const ro = [pNear[0]*nearW, pNear[1]*nearW, pNear[2]*nearW];
+  const far = [pFar[0]*farW,  pFar[1]*farW,  pFar[2]*farW];
+  const rd = vec3Normalize([far[0]-ro[0], far[1]-ro[1], far[2]-ro[2]]);
+  return { ro, rd };
+}
+
+/* ================== Render loop ================== */
+let hovered=false;
+
+function frame(){
+  recreateTargets();
+
+  if (!bgBlur0H){
+    bgBlur0H = makePostBG(mask0View);
+    bgBlur0V = makePostBG(blur0View);
+
+    bgDownsample = makePostBG(glow0View);
+
+    bgBlur1H = makePostBG(ds1View);
+    bgBlur1V = makePostBG(blur1View);
+
+    bgComposite = makeCompBG();
+  }
+
+  const aspect = W/H;
+  const proj = mat4Perspective(Math.PI/3, aspect, 0.1, 50);
+  const camPos = [0, 0.8, 4.0];
+  const view = mat4LookAt(camPos, [0,0,0], [0,1,0]);
+
+  const t = performance.now()*0.001;
+  const model = mat4Mul(mat4RotateY(t*1.2), mat4RotateX(t*0.7));
+
+  const viewProj = mat4Mul(proj, view);
+  const invViewProj = mat4Invert(viewProj);
+
+  if (mouseClientX!=null){
+    const { ro, rd } = getRayWorldFromMouse(mouseClientX, mouseClientY, invViewProj);
+    const invModel = mat4Invert(model);
+
+    const ro4 = mulMat4Vec4(invModel, [ro[0], ro[1], ro[2], 1]);
+    const p14 = mulMat4Vec4(invModel, [ro[0]+rd[0], ro[1]+rd[1], ro[2]+rd[2], 1]);
+
+    const roM = [ro4[0]/ro4[3], ro4[1]/ro4[3], ro4[2]/ro4[3]];
+    const p1M = [p14[0]/p14[3], p14[1]/p14[3], p14[2]/p14[3]];
+    const rdM = vec3Normalize([p1M[0]-roM[0], p1M[1]-roM[1], p1M[2]-roM[2]]);
+
+    hovered = rayAabbHit(roM, rdM, [-S,-S,-S], [S,S,S]);
+  } else hovered=false;
+
+  const mvp = mat4Mul(proj, mat4Mul(view, model));
+
+  const cubeColor = hovered ? [1.0, 0.2, 0.2, 1.0] : [1.0, 0.85, 0.12, 1.0];
+
+  // ✅ 不微调，直接夸张：fresnel + 超大 boost
+  const fresnelK = 6.0;
+  const boost = 25.0;  // 关键：让 mask 有足够能量，blur 才会像雾团
+
+  const cubeUni = new Float32Array(44);
+  cubeUni.set(mvp, 0);
+  cubeUni.set(model, 16);
+  cubeUni.set([camPos[0], camPos[1], camPos[2], 0], 32);
+  cubeUni.set(cubeColor, 36);
+  cubeUni.set([fresnelK, boost, 0, 0], 40);
+  device.queue.writeBuffer(cubeUniform, 0, cubeUni);
+
+  // ✅ 不微调：强度直接拉满
+  const intensity = hovered ? 2.0 : 0.0;
+
+  // ✅ 两层 blur 半径都很大
+  const radius0 = 1.0;   // 1/12 上的模糊跨度很大
+  const radius1 = 1.25;  // 1/24 更夸张
+
+  const encoder = device.createCommandEncoder();
+
+  // Pass 1: scene
+  {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: sceneView,
+        clearValue: { r: 0.05, g: 0.07, b: 0.10, a: 1 },
+        loadOp: "clear", storeOp: "store",
+      }],
+      depthStencilAttachment: {
+        view: sceneDepth.createView(),
+        depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+      }
+    });
+    pass.setPipeline(cubeLitPipeline);
+    pass.setBindGroup(0, cubeBG);
+    pass.setVertexBuffer(0, vb);
+    pass.setIndexBuffer(ib, "uint16");
+    pass.drawIndexed(idx.length);
+    pass.end();
+  }
+
+  // Pass 2: mask0 (1/12)
+  {
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: mask0View,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: "clear", storeOp: "store",
+      }],
+      depthStencilAttachment: {
+        view: mask0Depth.createView(),
+        depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store",
+      }
+    });
+    if (hovered) {
+      pass.setPipeline(cubeMaskPipeline);
+      pass.setBindGroup(0, cubeBG);
+      pass.setVertexBuffer(0, vb);
+      pass.setIndexBuffer(ib, "uint16");
+      pass.drawIndexed(idx.length);
+    }
+    pass.end();
+  }
+
+// Blur0 H: mask0 -> blur0
+{
+  device.queue.writeBuffer(
+    blurUniform, 0,
+    new Float32Array([ 1,0, 1/GW0,1/GH0,  1,radius0,0,0 ])
+  );
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view: blur0View, clearValue:{r:0,g:0,b:0,a:1}, loadOp:"clear", storeOp:"store" }]
+  });
+  pass.setPipeline(blurPipeline);
+  pass.setBindGroup(0, bgBlur0H);
+  pass.draw(3);
+  pass.end();
+}
+
+// Blur0 V: blur0 -> glow0
+{
+  device.queue.writeBuffer(
+    blurUniform, 0,
+    new Float32Array([ 0,1, 1/GW0,1/GH0,  1,radius0,0,0 ])
+  );
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view: glow0View, clearValue:{r:0,g:0,b:0,a:1}, loadOp:"clear", storeOp:"store" }]
+  });
+  pass.setPipeline(blurPipeline);
+  pass.setBindGroup(0, bgBlur0V);
+  pass.draw(3);
+  pass.end();
+}
+
+  // Downsample: glow0 (1/12) -> ds1 (1/24)
+  {
+    device.queue.writeBuffer(blurUniform, 0, new Float32Array([0,0, 0,0, 0,0, 0,0]));
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{ view: ds1View, clearValue:{r:0,g:0,b:0,a:1}, loadOp:"clear", storeOp:"store" }]
+    });
+    pass.setPipeline(downsamplePipeline);
+    pass.setBindGroup(0, bgDownsample);
+    pass.draw(3);
+    pass.end();
+  }
+
+// Blur1 H: ds1 -> blur1
+{
+  device.queue.writeBuffer(
+    blurUniform, 0,
+    new Float32Array([ 1,0, 1/GW1,1/GH1,  1,radius1, 0,0 ])
+  );
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view: blur1View, clearValue:{r:0,g:0,b:0,a:1}, loadOp:"clear", storeOp:"store" }]
+  });
+  pass.setPipeline(blurPipeline);
+  pass.setBindGroup(0, bgBlur1H);
+  pass.draw(3);
+  pass.end();
+}
+
+// Blur1 V: blur1 -> glow1
+{
+  device.queue.writeBuffer(
+    blurUniform, 0,
+    new Float32Array([ 0,1, 1/GW1,1/GH1,  1,radius1, 0,0 ])
+  );
+
+  const pass = encoder.beginRenderPass({
+    colorAttachments: [{ view: glow1View, clearValue:{r:0,g:0,b:0,a:1}, loadOp:"clear", storeOp:"store" }]
+  });
+  pass.setPipeline(blurPipeline);
+  pass.setBindGroup(0, bgBlur1V);
+  pass.draw(3);
+  pass.end();
+}
+
+  // Composite
+  {
+    device.queue.writeBuffer(compUniform, 0, new Float32Array([0,0,0,0, intensity,0,0,0]));
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: ctx.getCurrentTexture().createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: "clear", storeOp: "store",
+      }]
+    });
+    pass.setPipeline(compositePipeline);
+    pass.setBindGroup(0, bgComposite);
+    pass.draw(3);
+    pass.end();
+  }
+
+  device.queue.submit([encoder.finish()]);
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+    </body>
+</html>
