@@ -19,7 +19,7 @@ struct VSIn {
 
 struct VSOut {
     @builtin(position) clipPos : vec4<f32>,
-    @location(0) nrm : vec3<f32>,
+    @location(0) normal : vec3<f32>,
     @location(1) @interpolate(flat) id: u32,
 };
 
@@ -30,7 +30,13 @@ fn vertexMain(input: VSIn) -> VSOut {
     let wp = world.m * vec4<f32>(input.position, 1.0);
     out.clipPos = camera.proj * camera.view *wp;
 
-    out.nrm = normalize((world.m * vec4<f32>(input.normal, 0.0)).xyz);
+    let normalMat = mat3x3<f32>(
+        world.m[0].xyz,
+        world.m[1].xyz,
+        world.m[2].xyz
+    );
+    out.normal = normalize(normalMat * input.normal);
+    // out.normal = normalize((world.m * vec4<f32>(input.normal, 0.0)).xyz);
     out.id = input.id;
     
     return out;

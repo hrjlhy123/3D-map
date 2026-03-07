@@ -117,7 +117,15 @@ wss.on("connection", (ws) => {
             const centerLat = (bbox.minLat + bbox.maxLat) / 2;
 
             // ✅ 1) bbox 内所有 tiles（数组）
-            const tiles = h3idsForBbox(bbox, RES);
+            const PAD = 0.003; // ≈ 330m buffer
+
+            const paddedBbox = {
+                minLon: bbox.minLon - PAD,
+                maxLon: bbox.maxLon + PAD,
+                minLat: bbox.minLat - PAD,
+                maxLat: bbox.maxLat + PAD
+            };
+            const tiles = h3idsForBbox(paddedBbox, RES);
 
             // ✅ 2) tiles 按“距离中心”由近到远排序
             const tileDist2 = (id_h3) => {
@@ -220,10 +228,12 @@ wss.on("connection", (ws) => {
                         // 估算大小：最简单就是 stringify 一下取 length（会多一点 CPU，但比每条 send 省太多）
                         // 更省 CPU 的方式是根据数组长度粗估：例如 positions/indices 长度 * 4 bytes 等
                         const id_osm = feature?.properties?.osm_id ?? null;
-                        const obj = { id:{
-                            h3: id_h3,
-                            osm: id_osm,
-                        }, parts };
+                        const obj = {
+                            id: {
+                                h3: id_h3,
+                                osm: id_osm,
+                            }, parts
+                        };
                         obj._bytes = JSON.stringify(obj).length;
 
                         pushToBatch(obj);
