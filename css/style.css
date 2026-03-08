@@ -3,8 +3,62 @@ body {
   margin: 0;
   height: 100%;
 }
-canvas {
+#building {
   width: 100%;
   height: calc(100% - 100px);
   display: block;
+  filter: blur(0.75px);
+}
+
+#bg {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  z-index: -1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: rgba(85, 85, 85, 0.8);
+}
+
+#sky {
+  display: none;
+  width: 100%;
+  /* height: 75%; */
+  background: url(../img/sky1.png) top / 100% 100% no-repeat;
+  overflow: hidden;
+  z-index: -1;
+  position: relative;
+}
+
+#source_sky {
+  display: none;
+}
+
+#ground {
+  display: none;
+  width: 100%;
+  /* height: 25%; */
+  background: url(../img/ground.jpg) bottom / 100% 100% no-repeat;
+  filter: blur(1px) contrast(0.9) grayscale(0.2) brightness(0.5);
+  scale: 1.01;
+  box-sizing: border-box;
+  flex-grow: 1;
+}
+
+#progress {
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  height: 8px;
+  width: 0%;
+
+  background: linear-gradient(to bottom, #7fd3ff 0%, #4da9e6 40%, #2d7bb5 100%);
+
+  box-shadow:
+    inset 0 1px 2px rgba(255, 255, 255, 0.6),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.3);
+
+  transition: width 0.05s linear;
 }

@@ -117,7 +117,8 @@ wss.on("connection", (ws) => {
             const centerLat = (bbox.minLat + bbox.maxLat) / 2;
 
             // ✅ 1) bbox 内所有 tiles（数组）
-            const PAD = 0.003; // ≈ 330m buffer
+            // const PAD = 0.003; // ≈ 330m buffer
+            const PAD = 0.003;
 
             const paddedBbox = {
                 minLon: bbox.minLon - PAD,

@@ -420,8 +420,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         let centerLon, centerLat
         console.log(`centerLon: ${centerLon}, centerLat: ${centerLat}`)
 
-        const POOL_TARGET = 100_000_000;     // 池子凑到多少个 building 就 flush 一次（你可调 300~3000）
-        const POOL_MAX_HOLD_MS = 1_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
+        const POOL_TARGET = 10_000_000;     // 池子凑到多少个 building 就 flush 一次（你可调 300~3000）
+        const POOL_MAX_HOLD_MS = 5_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
 
         let pool = [];
         let poolLastFlush = performance.now();
@@ -645,7 +645,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         let BUILDING_MODE = "extrude";
         data_deploy = (device) => {
             flushPoolToPending(false);
-            const BUDGET_MS = 24.0 // ?ms / frame to avoid lag
+            const BUDGET_MS = 16.0 // ?ms / frame to avoid lag
             const t0 = performance.now()
 
             while (GPUResources.data.pending.length) {
@@ -794,7 +794,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                     const dz = ecef[2] - frame.origin[2];
 
                     return [
-                        -(dx * frame.east[0] + dy * frame.east[1] + dz * frame.east[2]),   // x = east
+                        dx * frame.east[0] + dy * frame.east[1] + dz * frame.east[2],   // x = east
                         dx * frame.north[0] + dy * frame.north[1] + dz * frame.north[2],  // y = north
                         dx * frame.up[0] + dy * frame.up[1] + dz * frame.up[2],     // z = up
                     ];
@@ -909,7 +909,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             },
             primitive: {
                 topology: `triangle-list`,
-                frontFace: 'cw',   // ✅ 关键
+                frontFace: 'ccw',   // ✅ 关键
                 cullMode: 'back',
             },
             depthStencil: {
@@ -940,7 +940,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             },
             primitive: {
                 topology: `triangle-list`,
-                frontFace: 'cw',   // ✅ 关键
+                frontFace: 'ccw',   // ✅ 关键
                 cullMode: 'back',
             },
             depthStencil: {
@@ -955,109 +955,12 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         ready.GPU = true
     }
 
-    // /* == Camera Controller == */
-    // // (yaw/pitch/zoom/pan)
-    // // 左键拖动：yaw/pitch
-    // // 中键(滚轮按下)拖动：平移（屏幕上下左右）
-    // // 滚轮：缩放（zoom = 相机距离）
-    // // Reset 按钮：恢复默认
-    // (() => {
-    //     // -------- State --------
-    //     let yaw = 0;
-    //     let pitch = -0.25;
-    //     let zoom = 19300;
-    //     let panX = 0, panY = 0;
-
-    //     // -------- Limits --------
-    //     const MIN_PITCH = -Math.PI / 2 + 0.05;
-    //     const MAX_PITCH = Math.PI / 2 - 0.05;
-    //     const MIN_ZOOM = 25;
-    //     const MAX_ZOOM = 19300;
-
-    //     const ROT_SENS = 0.005;   // 旋转灵敏度：越大越敏感
-    //     const PAN_SENS = 16.0;       // 平移灵敏度：越大平移越快（你现在快就继续减小）
-    //     const ZOOM_SENS = 4.0;  // 缩放灵敏度：越大缩放越快
-
-    //     // zoom 自适应缩放倍率
-    //     // zoom 小 = 更近（放大）=> scale 小（更慢）
-    //     // zoom 大 = 更远（缩小）=> scale 大（更快）
-    //     const ZOOM_REF = 800;
-    //     const SCALE_MIN = 0.15;
-    //     const SCALE_MAX = 2.0;
-
-    //     const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-
-    //     function zoomScale() {
-    //         // 放大(zoom大) => scale小(更慢)
-    //         // 缩小(zoom小) => scale大(更快)
-    //         // console.log(`zoom:`, zoom)
-    //         let t = Math.max(0, Math.min(1,
-    //             (zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM)
-    //         ));
-    //         return 1.0 + (0.05 - 1.0) * t;
-    //     }
-
-    //     // -------- Event --------
-    //     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-
-    //     canvas.addEventListener("mousemove", (e) => {
-    //         if (e.buttons === 1) {
-    //             // // 左键：旋转
-    //             // yaw += e.movementX * ROT_SENS;
-    //             // pitch -= e.movementY * ROT_SENS;
-    //             // pitch = clamp(pitch, MIN_PITCH, MAX_PITCH);
-    //         } else if (e.buttons === 4 || e.buttons === 1) {
-    //             // 中键：平移（屏幕空间）
-    //             const s = zoomScale();                // 随 zoom 自动缩放速度
-    //             // panX += e.movementX * PAN_SENS * s;
-    //             // panY += e.movementY * PAN_SENS * s;  // 方向不对就把负号去掉或反过来
-    //             panX += e.movementX * PAN_SENS;
-    //             panY += e.movementY * PAN_SENS;
-    //         }
-    //     });
-
-    //     canvas.addEventListener("wheel", (e) => {
-    //         e.preventDefault();
-    //         zoom += -e.deltaY * ZOOM_SENS;
-    //         zoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
-
-    //         console.log(`zoom:`, zoom,
-    //             `\ne.deltaY:`, e.deltaY,
-    //             `\nZOOM_SENS:`, ZOOM_SENS,
-    //         )
-    //     }, { passive: false });
-
-    //     // -------- Reset --------
-    //     const resetBtn = document.getElementById("resetCamBtn");
-    //     if (resetBtn) {
-    //         resetBtn.addEventListener("click", () => {
-    //             yaw = 0; pitch = -0.25; zoom = 800; panX = 0; panY = 0;
-    //         });
-    //     }
-
-    //     // -------- Apply to GPU --------
-    //     window.camera = (mat4, GPUResources, device, matrix) => {
-    //         const eye = [panX, panY, -zoom];
-    //         const target = [panX, panY, 0];
-    //         const up = [0, 1, 0];
-
-    //         matrix.view = mat4.create();
-    //         mat4.lookAt(matrix.view, eye, target, up);
-
-    //         device.queue.writeBuffer(GPUResources.buffer.camera, 64, matrix.view);
-
-    //         matrix.world = mat4.create(); // 保持 identity
-    //         mat4.multiply(matrix.world, matrix.world, matrix.transform);
-    //         device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world);
-    //     };
-    // })();
-
     /* == Camera Controller == */
     (() => {
         // -------- State --------
         let yaw = 0;
-        let pitch = -1.15;
-        let zoom = 19300;
+        window.pitch = -1.15;
+        window.zoom = 19300;
         let panX = 0, panY = 0;
 
         // 鼠标在 canvas 上的像素位置（用于“按鼠标位置缩放”）
@@ -1070,10 +973,10 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         const VIEW_CHANGE_ZOOM = 150; // 从这里开始视角变化，同时停止跟随鼠标缩放
 
         const MIN_PITCH = -1.15; // 远处俯视
-        const MAX_PITCH = 0.06;  // 约 2.3°；如果你要 10°，改成 Math.PI / 18
+        const MAX_PITCH = 0.06;  // 如果你要 10°，改成 Math.PI / 18
 
         const PAN_SENS = 1.0;
-        const WHEEL_ZOOM_K = 0.0015;
+        const WHEEL_ZOOM_K = 0.0005;
 
         const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
         const lerp = (a, b, t) => a + (b - a) * t;
@@ -1240,7 +1143,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 }
             } else {
                 zoom = newZoom;
-                console.log(`大`)
             }
         }
 
@@ -1358,9 +1260,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world);
         };
     })();
-    
+
     /* == Interaction == */
-    let mouseX = 0, mouseY = 0, hovered = 0, id_last_hover = 0, pending = false
+    let mouseX = 0, mouseY = 0, hovered = 0, id_last_hover = 0
     {
         canvas.addEventListener("mousemove", (e) => {
             const r = canvas.getBoundingClientRect();
@@ -1432,7 +1334,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
 
             id_last_hover = id_selected
-            // pending = false
             return id_selected
         }
 
@@ -1456,7 +1357,365 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
     }
 
+    // progress bar
+    const btn = document.querySelector('#startBtn');
+    const bar = document.querySelector('#progress');
+    console.log(btn, bar);
+    btn.addEventListener("click", () => {
+        const start = performance.now();
+        const duration = 3000;
 
+        function update(now) {
+
+            const t = (now - start) / duration;
+            const progress = Math.min(t, 1);
+
+            bar.style.width = (progress * 100) + "%";
+
+            if (progress < 1) {
+                requestAnimationFrame(update);
+            }
+        }
+
+        requestAnimationFrame(update);
+    })
+
+    /* == Environmental Rendering == */
+    {
+        const video = document.getElementById('source_sky');
+        const canvas = document.getElementById('sky');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        // ===== 参数 =====
+        const VIDEO_RATE = 0.1;
+        const OUTPUT_FPS = 60;
+
+        const EST_W = 160;
+        const EST_H = 90;
+        const SEARCH_RADIUS = 8;
+        const SEARCH_STEP = 2;
+        // =================
+
+        const smallCanvas = document.createElement('canvas');
+        const smallCtx = smallCanvas.getContext('2d', { willReadFrequently: true });
+
+        let frameA = null;        // 上一个真实帧
+        let frameB = null;        // 当前真实帧
+        let smallA = null;
+        let smallB = null;
+
+        let flowDx = 0;
+        let flowDy = 0;
+
+        let segStartPerf = 0;     // 当前 A->B 段开始时间（performance.now）
+        let segDurationMs = 100;  // 当前段持续时间
+        let lastMediaTime = -1;
+
+        let ready = false;
+        let lastRenderNow = 0;
+
+        function resize2() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            smallCanvas.width = EST_W;
+            smallCanvas.height = EST_H;
+        }
+
+        resize2();
+        window.addEventListener('resize', resize2);
+
+        let pitch_old = pitch
+        let _pitch = 0;
+        Object.defineProperty(window, "pitch", {
+            get() {
+                return _pitch
+            },
+            set(v) {
+                _pitch = v
+                // 参数变化时执行
+                if (v != pitch_old) {
+                    adjust_clarity(v)
+                    adjust_horizon(v);
+                    pitch_old = v
+                }
+
+            }
+        });
+        function adjust_horizon(pitch) {
+            // console.log(`adjust_horizon`);
+            setTimeout(() => {
+                const sky = document.querySelector('#sky');
+                const ground = document.querySelector('#ground');
+                if (pitch >= -0.38) {
+                    let horizon
+                    if (pitch <= 0) {
+                        horizon = (pitch + 0.38) / (0 + 0.38) * 0.4
+                        sky.style.display = `initial`
+                        ground.style.display = `none`
+                    } else {
+                        // horizon = (pitch - 0) / (0.06 - 0) * (0.75 - 0.4) + 0.4
+                        horizon = Math.pow(pitch / 0.06, 2) * 0.35 + 0.4
+                        let opacity
+                        opacity = Math.max(0, Math.min(1, pitch / 0.06))
+                        ground.style.opacity = opacity
+                        ground.style.display = `initial`
+                    }
+                    sky.style.height = `${horizon * 100}%`;
+                } else {
+                    sky.style.display = `none`
+                    ground.style.display = `none`
+                }
+            }, 15)
+        }
+        function adjust_clarity(pitch) {
+            setTimeout(() => {
+                const building = document.querySelector(`#building`)
+                let blur;
+                const MAX_BLUR = 0.75;
+                const MIN_BLUR = 1;
+                if (pitch >= -0.38) {
+
+                    if (pitch <= 0) {
+                        blur = MAX_BLUR - (pitch + 0.38) / 0.38 * MAX_BLUR;
+                    } else {
+                        blur = (pitch / 0.06) * (MIN_BLUR * 0.5);
+                    }
+
+                    blur = Math.max(0, Math.min(MAX_BLUR, blur));
+
+                } else {
+                    blur = MAX_BLUR;
+                }
+                building.style.filter = `blur(${blur}px)`;
+            }, 0)
+        }
+
+
+        function captureFullFrame() {
+            const temp = document.createElement('canvas');
+            temp.width = canvas.width;
+            temp.height = canvas.height;
+            const tctx = temp.getContext('2d', { willReadFrequently: true });
+            tctx.drawImage(video, 0, 0, temp.width, temp.height);
+            const img = tctx.getImageData(0, 0, temp.width, temp.height);
+            return new Uint8ClampedArray(img.data);
+        }
+
+        function captureSmallFrame() {
+            smallCtx.clearRect(0, 0, EST_W, EST_H);
+            smallCtx.drawImage(video, 0, 0, EST_W, EST_H);
+            const img = smallCtx.getImageData(0, 0, EST_W, EST_H);
+            return new Uint8ClampedArray(img.data);
+        }
+
+        function estimateShift(a, b, w, h) {
+            let bestDx = 0;
+            let bestDy = 0;
+            let bestScore = Infinity;
+
+            for (let oy = -SEARCH_RADIUS; oy <= SEARCH_RADIUS; oy++) {
+                for (let ox = -SEARCH_RADIUS; ox <= SEARCH_RADIUS; ox++) {
+                    let score = 0;
+                    let count = 0;
+
+                    for (let y = SEARCH_RADIUS; y < h - SEARCH_RADIUS; y += SEARCH_STEP) {
+                        for (let x = SEARCH_RADIUS; x < w - SEARCH_RADIUS; x += SEARCH_STEP) {
+                            const x2 = x + ox;
+                            const y2 = y + oy;
+                            if (x2 < 0 || x2 >= w || y2 < 0 || y2 >= h) continue;
+
+                            const i1 = (y * w + x) * 4;
+                            const i2 = (y2 * w + x2) * 4;
+
+                            const l1 = a[i1] * 0.299 + a[i1 + 1] * 0.587 + a[i1 + 2] * 0.114;
+                            const l2 = b[i2] * 0.299 + b[i2 + 1] * 0.587 + b[i2 + 2] * 0.114;
+
+                            score += Math.abs(l1 - l2);
+                            count++;
+                        }
+                    }
+
+                    score /= Math.max(1, count);
+
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestDx = ox;
+                        bestDy = oy;
+                    }
+                }
+            }
+
+            return { dx: bestDx, dy: bestDy };
+        }
+
+        function sampleBilinear(frame, w, h, x, y, c) {
+            x = Math.max(0, Math.min(w - 1, x));
+            y = Math.max(0, Math.min(h - 1, y));
+
+            const x0 = Math.floor(x);
+            const y0 = Math.floor(y);
+            const x1 = Math.min(w - 1, x0 + 1);
+            const y1 = Math.min(h - 1, y0 + 1);
+
+            const fx = x - x0;
+            const fy = y - y0;
+
+            const i00 = (y0 * w + x0) * 4 + c;
+            const i10 = (y0 * w + x1) * 4 + c;
+            const i01 = (y1 * w + x0) * 4 + c;
+            const i11 = (y1 * w + x1) * 4 + c;
+
+            const v00 = frame[i00];
+            const v10 = frame[i10];
+            const v01 = frame[i01];
+            const v11 = frame[i11];
+
+            const v0 = v00 * (1 - fx) + v10 * fx;
+            const v1 = v01 * (1 - fx) + v11 * fx;
+
+            return v0 * (1 - fy) + v1 * fy;
+        }
+
+        function buildInterpolatedFrame(now) {
+            if (!ready || !frameA || !frameB) return null;
+
+            const w = canvas.width;
+            const h = canvas.height;
+            const out = new Uint8ClampedArray(w * h * 4);
+
+            let t = (now - segStartPerf) / Math.max(1, segDurationMs);
+            t = Math.max(0, Math.min(1, t));
+
+            // A 往 B 方向走
+            const ax = flowDx * t;
+            const ay = flowDy * t;
+
+            // B 反向补回来
+            const bx = flowDx * (t - 1);
+            const by = flowDy * (t - 1);
+
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const dst = (y * w + x) * 4;
+
+                    for (let c = 0; c < 3; c++) {
+                        const va = sampleBilinear(frameA, w, h, x - ax, y - ay, c);
+                        const vb = sampleBilinear(frameB, w, h, x - bx, y - by, c);
+                        const v = va * (1 - t) + vb * t;
+                        out[dst + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+                    }
+
+                    out[dst + 3] = 255;
+                }
+            }
+
+            return out;
+        }
+
+        function drawFrame(frame) {
+            if (!frame) return;
+            ctx.putImageData(new ImageData(frame, canvas.width, canvas.height), 0, 0);
+        }
+
+        function resetWithCurrentFrame() {
+            const full = captureFullFrame();
+            const small = captureSmallFrame();
+
+            frameA = new Uint8ClampedArray(full);
+            frameB = new Uint8ClampedArray(full);
+            smallA = new Uint8ClampedArray(small);
+            smallB = new Uint8ClampedArray(small);
+
+            flowDx = 0;
+            flowDy = 0;
+            segStartPerf = performance.now();
+            segDurationMs = 100;
+            ready = true;
+        }
+
+        function onVideoFrame(now, metadata) {
+            const mediaTime = metadata.mediaTime; // 秒
+
+            // 检测 loop：如果 mediaTime 突然变小，说明从结尾跳回开头了
+            if (lastMediaTime >= 0 && mediaTime < lastMediaTime) {
+                resetWithCurrentFrame();
+                lastMediaTime = mediaTime;
+                video.requestVideoFrameCallback(onVideoFrame);
+                return;
+            }
+
+            const full = captureFullFrame();
+            const small = captureSmallFrame();
+
+            if (!ready) {
+                frameA = new Uint8ClampedArray(full);
+                frameB = new Uint8ClampedArray(full);
+                smallA = new Uint8ClampedArray(small);
+                smallB = new Uint8ClampedArray(small);
+
+                segStartPerf = performance.now();
+                segDurationMs = 100;
+                flowDx = 0;
+                flowDy = 0;
+                ready = true;
+            } else {
+                const dtSec = lastMediaTime >= 0 ? (mediaTime - lastMediaTime) : 0.1;
+                segDurationMs = Math.max(1, dtSec * 1000 / VIDEO_RATE);
+
+                frameA = frameB;
+                smallA = smallB;
+
+                frameB = new Uint8ClampedArray(full);
+                smallB = new Uint8ClampedArray(small);
+
+                const shift = estimateShift(smallA, smallB, EST_W, EST_H);
+
+                flowDx = shift.dx * (canvas.width / EST_W);
+                flowDy = shift.dy * (canvas.height / EST_H);
+
+                segStartPerf = performance.now();
+            }
+
+            lastMediaTime = mediaTime;
+            video.requestVideoFrameCallback(onVideoFrame);
+        }
+
+        function renderLoop(now) {
+            if (!lastRenderNow) lastRenderNow = now;
+
+            const dt = now - lastRenderNow;
+            if (dt >= 1000 / OUTPUT_FPS) {
+                lastRenderNow = now;
+
+                if (ready) {
+                    const frame = buildInterpolatedFrame(now);
+                    drawFrame(frame);
+                }
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        async function start() {
+            try {
+                video.muted = true;
+                video.loop = true;
+                video.playsInline = true;
+                video.preload = 'auto';
+                video.playbackRate = VIDEO_RATE;
+
+                await video.play();
+
+                resetWithCurrentFrame();
+                video.requestVideoFrameCallback(onVideoFrame);
+                requestAnimationFrame(renderLoop);
+            } catch (err) {
+                console.error('start failed:', err);
+            }
+        }
+
+        start();
+    }
 
     /* == Render Loop == */
     const render = () => {
@@ -1469,7 +1728,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 {
                     view: context.getCurrentTexture().createView(),
                     loadOp: "clear",
-                    clearValue: { r: 0.1, g: 0.1, b: 0.1, a: 1.0 },
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
                     storeOp: "store",
                 }
             ],
@@ -1525,15 +1784,16 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
 
     // Page
-    document.getElementById("startBtn").onclick = () => {
+    document.addEventListener("click", () => {
         ws.send(JSON.stringify({
             type: "start",
             bbox: bbox,
             layer: "gis_osm_buildings_a_free_1",
             res: 7
         }))
+        console.log(`bbox:`, bbox)
         PAUSE_RENDER = false
-    }
+    })
 
     document.getElementById("stopBtn").onclick = () => {
         ws.send(JSON.stringify({ type: "stop" }))
