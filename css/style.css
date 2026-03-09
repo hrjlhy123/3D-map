@@ -2,18 +2,79 @@ html,
 body {
   margin: 0;
   height: 100%;
+  width: 100%;
+  display: flex;
+  flex-direction: row;
 }
+
+body {
+  padding: 1rem;
+  box-sizing: border-box;
+  background:
+    radial-gradient(circle at 20% 80%, #a6c6dd 0%, transparent 40%),
+    linear-gradient(180deg, #b7d1e6 0%, #d5e6f2 50%, #eef6fb 100%);
+}
+
+.panel_left {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  align-items: center;
+}
+
+.panel_left > .kpi_card {
+  width: 160px;
+  height: 84px;
+  background: rgba(255, 255, 255, 0.88);
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 34px;
+  font-weight: 700;
+  color: #2f5f88;
+  pointer-events: auto;
+}
+
+.panel_right {
+  flex: 3;
+  display: flex;
+  flex-direction: column;
+  /* display: none; */
+}
+
+.panel_right_top {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-around;
+}
+
+.panel_right_top > .chart_card {
+  flex: 1l;
+}
+
+#map {
+  width: 100%;
+  height: calc(100% - 100px);
+  flex: 3;
+  position: relative;
+  /* transform: skew(-30deg, 0); */
+}
+
 #building {
   width: 100%;
   height: calc(100% - 100px);
   display: block;
-  filter: blur(0.75px);
+  filter: blur(0.5px);
 }
 
 #bg {
   position: absolute;
   width: 100%;
-  height: 100%;
+  height: calc(100% - 100px);
   top: 0;
   z-index: -1;
   overflow: hidden;
@@ -48,7 +109,7 @@ body {
 }
 
 #progress {
-  position: fixed;
+  /* position: fixed; */
   left: 0;
   bottom: 0;
   height: 8px;

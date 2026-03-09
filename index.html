@@ -7,18 +7,38 @@
         <link rel="stylesheet" href="./css/style.css">
     </head>
     <body>
-        <canvas id="building"></canvas>
-        <button id="startBtn">Start</button>
-        <button id="stopBtn">Stop</button>
-        <button id="resetCamBtn">Reset Camera</button>
-        <pre id="log"></pre>
-        <div id="bg">
-            <video autoplay muted loop playsinline id="source_sky"
-                src="./vid/sky.mp4"></video>
-            <canvas id="sky"></canvas>
-            <div id="ground"></div>
+        <div class="panel_left">
+            <div class="kpi_card">$8.75M</div>
+            <div class="kpi_card">$4.18M</div>
+            <div class="kpi_card">$2.32M</div>
+            <div class="kpi_card">$2.25M</div>
         </div>
-        <div id="progress"></div>
+        <div class="panel_right">
+            <div class="panel_right_top">
+                <div class="chart_card">
+                    <canvas id="lineChart"></canvas>
+                </div>
+                <div class="chart_card">
+                    <canvas id="barChart"></canvas>
+                </div>
+            </div>
+            <div id="map">
+                <canvas id="building"></canvas>
+                <div id="progress"></div>
+                <button id="startBtn">Start</button>
+                <button id="stopBtn">Stop</button>
+                <button id="resetCamBtn">Reset Camera</button>
+                <pre id="log"></pre>
+                <div id="bg">
+                    <video autoplay muted loop playsinline id="source_sky"
+                        src="./vid/sky.mp4"></video>
+                    <canvas id="sky"></canvas>
+                    <div id="ground"></div>
+                </div>
+            </div>
+        </div>
+        <script src="../node_modules/chart.js/dist/chart.umd.js"></script>
         <script type="module" src="./function/scene.js"></script>
+        <script type="module" src="./function/dashboard.js"></script>
     </body>
 </html>

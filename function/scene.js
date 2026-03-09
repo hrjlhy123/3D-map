@@ -20,7 +20,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 throw new Error(`WebGPU not supported`)
             })()
 
-            canvas = document.querySelector(`canvas`) ?? (() => {
+            canvas = document.querySelector(`canvas#building`) ?? (() => {
                 throw new Error(`Could not access canvas`)
             })()
 
@@ -590,26 +590,38 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 indices.push(a, c, b)
             }
 
-            // WALLS (outer ring only)
-            for (let i = 0; i < vertexCount; i++) {
-                const j = (i + 1) % vertexCount
-                const xi = ringENU[i][0]
-                const yi = ringENU[i][1]
-                const xj = ringENU[j][0]
-                const yj = ringENU[j][1]
+            // WALLS (iterate each ring separately)
+            const holeStarts = Array.isArray(part.holes) ? part.holes : []
+            const ringStarts = [0, ...holeStarts]
+            const ringEnds = [...holeStarts, vertexCount]
 
-                const dx = xj - xi
-                const dy = yj - yi
-                // Because OUTER ring is CCW, outward normal for an edge (dx, dy) is (dy, -dx).
-                const [nx, ny] = norm2(dy, -dx)
+            for (let r = 0; r < ringStarts.length; r++) {
+                const start = ringStarts[r]
+                const end = ringEnds[r]
 
-                const bi = vertex_push(xi, yi, 0, nx, ny, 0)
-                const bj = vertex_push(xj, yj, 0, nx, ny, 0)
-                const tj = vertex_push(xj, yj, height, nx, ny, 0)
-                const ti = vertex_push(xi, yi, height, nx, ny, 0)
+                // ring must have at least 2 edges / 3 vertices
+                if (end - start < 3) continue
 
-                indices.push(bi, bj, tj)
-                indices.push(bi, tj, ti)
+                for (let i = start; i < end; i++) {
+                    const j = (i + 1 < end) ? (i + 1) : start
+
+                    const xi = ringENU[i][0]
+                    const yi = ringENU[i][1]
+                    const xj = ringENU[j][0]
+                    const yj = ringENU[j][1]
+
+                    const dx = xj - xi
+                    const dy = yj - yi
+                    const [nx, ny] = norm2(dy, -dx)
+
+                    const bi = vertex_push(xi, yi, 0, nx, ny, 0)
+                    const bj = vertex_push(xj, yj, 0, nx, ny, 0)
+                    const tj = vertex_push(xj, yj, height, nx, ny, 0)
+                    const ti = vertex_push(xi, yi, height, nx, ny, 0)
+
+                    indices.push(bi, bj, tj)
+                    indices.push(bi, tj, ti)
+                }
             }
 
             return {
@@ -1276,6 +1288,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         });
 
         let id_selected = 0;
+        const interactionU32 = new Uint32Array(4)
         const hover = async (px, py) => {
             if (GPUResources.data.rendering.indexByteOffset <= 0) {
                 id_selected = 0;
@@ -1329,7 +1342,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             const copy = GPUResources.buffer.hover.getMappedRange(0, 4)
             id_selected = new Uint32Array(copy)[0] >>> 0
             GPUResources.buffer.hover.unmap()
-            const interactionU32 = new Uint32Array(4)
             interactionU32[0] = id_selected;
             device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
 
@@ -1471,7 +1483,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             setTimeout(() => {
                 const building = document.querySelector(`#building`)
                 let blur;
-                const MAX_BLUR = 0.75;
+                const MAX_BLUR = 0.5;
                 const MIN_BLUR = 1;
                 if (pitch >= -0.38) {
 
