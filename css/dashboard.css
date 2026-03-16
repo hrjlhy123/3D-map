@@ -57,7 +57,7 @@
 .kpi_back {
   width: 100%;
   transform: rotateY(180deg);
-  font-weight: 600;
+  font-size: 24px;
   color: #4c4c4c;
   margin-right: 1.5rem;
 }

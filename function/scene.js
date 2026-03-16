@@ -1078,441 +1078,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         ready.GPU = true
     }
 
-    /* == Camera Controller == */
-    (() => {
-        // -------- State --------
-        let yaw = 0;
-        window.pitch = -1.15;
-        window.zoom = 1400;
-        let panX = 0, panY = 0;
 
-        // 鼠标在 canvas 上的像素位置（用于“按鼠标位置缩放”）
-        let lastMousePx = canvas.width * 0.5;
-        let lastMousePy = canvas.height * 0.5;
-
-        // -------- Limits --------
-        const MIN_ZOOM = 10;
-        const MAX_ZOOM = 19300;
-        const VIEW_CHANGE_ZOOM = 150; // 从这里开始视角变化，同时停止跟随鼠标缩放
-
-        const MIN_PITCH = -1.15; // 远处俯视
-        const MAX_PITCH = 0.06;  // 如果你要 10°，改成 Math.PI / 18
-
-        const PAN_SENS = 1.0;
-        const WHEEL_ZOOM_K = 0.0005;
-
-        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-        const lerp = (a, b, t) => a + (b - a) * t;
-
-        function easeInOut(t) {
-            return t * t * (3 - 2 * t);
-        }
-
-        function pitchFromZoom(zoomValue) {
-            if (zoomValue > VIEW_CHANGE_ZOOM) return MIN_PITCH;
-
-            const t = 1 - (zoomValue - MIN_ZOOM) / (VIEW_CHANGE_ZOOM - MIN_ZOOM);
-            const k = easeInOut(clamp(t, 0, 1));
-
-            return lerp(MIN_PITCH, MAX_PITCH, k);
-        }
-
-        function autoPitchFromZoom() {
-            return pitchFromZoom(zoom);
-        }
-
-        function fovFromPitch(pitchValue) {
-            const BASE_FOV = 30 * Math.PI / 180;
-            const TELE_FOV = 9 * Math.PI / 180;
-
-            if (pitchValue < 0) return BASE_FOV;
-
-            const t = clamp(pitchValue / MAX_PITCH, 0, 1);
-            const k = easeInOut(t);
-
-            return lerp(BASE_FOV, TELE_FOV, k);
-        }
-
-        function autoFovFromZoom() {
-            return fovFromPitch(pitch);
-        }
-
-        function panScale() {
-            const t = clamp((zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM), 0, 1);
-            return lerp(0.15, 12.0, t);
-        }
-
-        function solveCameraState(zoomValue, panXValue, panYValue) {
-            const pitchValue = pitchFromZoom(zoomValue);
-            const fovValue = fovFromPitch(pitchValue);
-
-            const up = [0, 0, 1];
-            const anchor = [panXValue, panYValue, 0];
-            const lookAhead = 60.0;
-
-            let eye, target;
-
-            if (pitchValue < 0) {
-                const eyeHeight = Math.max(2.0, Math.sin(-pitchValue) * zoomValue);
-                const eyeBack = Math.max(0.0, Math.cos(-pitchValue) * zoomValue);
-
-                eye = [
-                    anchor[0],
-                    anchor[1] - eyeBack,
-                    anchor[2] + eyeHeight
-                ];
-
-                target = [
-                    anchor[0],
-                    anchor[1] + lookAhead,
-                    anchor[2] + lookAhead * Math.tan(pitchValue * 0.35)
-                ];
-            } else {
-                const tHead = clamp(pitchValue / MAX_PITCH, 0, 1);
-                const kHead = easeInOut(tHead);
-
-                const FIXED_EYE_HEIGHT = 2.0;
-                const eyeBackHead = lerp(20.0, 70.0, kHead);
-
-                eye = [
-                    anchor[0],
-                    anchor[1] - eyeBackHead,
-                    anchor[2] + FIXED_EYE_HEIGHT
-                ];
-
-                target = [
-                    eye[0],
-                    eye[1] + lookAhead,
-                    eye[2] + lookAhead * Math.tan(pitchValue)
-                ];
-            }
-
-            return { pitchValue, fovValue, eye, target, up };
-        }
-
-        function unprojectPoint(px, py, ndcZ, invVP) {
-            const x = (px / canvas.width) * 2 - 1;
-            const y = 1 - (py / canvas.height) * 2;
-
-            const v = [x, y, ndcZ, 1];
-
-            const out = [
-                invVP[0] * v[0] + invVP[4] * v[1] + invVP[8] * v[2] + invVP[12] * v[3],
-                invVP[1] * v[0] + invVP[5] * v[1] + invVP[9] * v[2] + invVP[13] * v[3],
-                invVP[2] * v[0] + invVP[6] * v[1] + invVP[10] * v[2] + invVP[14] * v[3],
-                invVP[3] * v[0] + invVP[7] * v[1] + invVP[11] * v[2] + invVP[15] * v[3],
-            ];
-
-            const w = out[3];
-            if (Math.abs(w) < 1e-8) return null;
-
-            return [out[0] / w, out[1] / w, out[2] / w];
-        }
-
-        function screenToGround(px, py, zoomValue, panXValue, panYValue) {
-            const { fovValue, eye, target, up } = solveCameraState(zoomValue, panXValue, panYValue);
-
-            const proj = mat4.create();
-            mat4.perspectiveZO(proj, fovValue, canvas.width / canvas.height, near, far);
-
-            const view = mat4.create();
-            mat4.lookAt(view, eye, target, up);
-
-            const vp = mat4.create();
-            mat4.multiply(vp, proj, view);
-
-            const invVP = mat4.create();
-            if (!mat4.invert(invVP, vp)) return null;
-
-            const pNear = unprojectPoint(px, py, 0, invVP);
-            const pFar = unprojectPoint(px, py, 1, invVP);
-            if (!pNear || !pFar) return null;
-
-            const dir = [
-                pFar[0] - pNear[0],
-                pFar[1] - pNear[1],
-                pFar[2] - pNear[2]
-            ];
-
-            if (Math.abs(dir[2]) < 1e-6) return null;
-
-            const t = -pNear[2] / dir[2];
-            if (!Number.isFinite(t)) return null;
-
-            return [
-                pNear[0] + dir[0] * t,
-                pNear[1] + dir[1] * t,
-                0
-            ];
-        }
-
-        function zoomAtMouse(deltaY) {
-            const oldZoom = zoom;
-            let newZoom = oldZoom / Math.exp(deltaY * WHEEL_ZOOM_K);
-            newZoom = clamp(newZoom, MIN_ZOOM, MAX_ZOOM);
-
-            // 只有“纯俯视阶段”才按鼠标位置缩放
-            // 一旦开始视角变化（zoom <= 150），就原地变焦
-            if (oldZoom > VIEW_CHANGE_ZOOM && newZoom > VIEW_CHANGE_ZOOM) {
-                const before = screenToGround(lastMousePx, lastMousePy, oldZoom, panX, panY);
-
-                zoom = newZoom;
-
-                const after = screenToGround(lastMousePx, lastMousePy, zoom, panX, panY);
-
-                if (before && after) {
-                    panX += before[0] - after[0];
-                    panY += before[1] - after[1];
-                }
-            } else {
-                zoom = newZoom;
-            }
-        }
-
-        // -------- Event --------
-        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-
-        function updateGroundTransform(pitch, yawCss) {
-            groundEl.style.setProperty('--rz', `${yawCss}deg`);
-        }
-
-        let yawCss = 0;
-        let isDraggingYaw = false;
-        let dragStartX = 0;
-        let yawStart = 0;
-
-        canvas.addEventListener("mousedown", (e) => {
-            // 左键或中键开始拖动
-            if (e.button === 0 || e.button === 1) {
-                isDraggingYaw = true;
-                dragStartX = e.clientX;
-                yawStart = yawCss;
-            }
-        });
-
-        window.addEventListener("mouseup", () => {
-            isDraggingYaw = false;
-        });
-
-        canvas.addEventListener("mousemove", (e) => {
-            const r = canvas.getBoundingClientRect();
-            const sx = (e.clientX - r.left) / r.width;
-            const sy = (e.clientY - r.top) / r.height;
-
-            lastMousePx = sx * canvas.width;
-            lastMousePy = sy * canvas.height;
-
-            // 左键 / 中键拖动平移
-            if (e.buttons === 1 || e.buttons === 4) {
-                const s = panScale();
-                panX -= e.movementX * PAN_SENS * s;
-                panY += e.movementY * PAN_SENS * s;
-            }
-
-            // 左键 / 中键按下后，根据相对水平位移旋转 ground
-            if (isDraggingYaw && (e.buttons === 1 || e.buttons === 4)) {
-                const dx = e.clientX - dragStartX;
-
-                // 向右拖 = 逆时针；向左拖 = 顺时针
-                yawCss = yawStart - dx * 0.1;
-
-                updateGroundTransform(pitch, yawCss);
-            }
-        });
-
-        canvas.addEventListener("wheel", (e) => {
-            e.preventDefault();
-
-            const r = canvas.getBoundingClientRect();
-            const sx = (e.clientX - r.left) / r.width;
-            const sy = (e.clientY - r.top) / r.height;
-
-            lastMousePx = sx * canvas.width;
-            lastMousePy = sy * canvas.height;
-
-            zoomAtMouse(e.deltaY);
-
-            console.log(
-                "zoom:", zoom,
-                "pitch:", pitchFromZoom(zoom),
-                "panX:", panX,
-                "panY:", panY
-            );
-
-            // Control KPI/chart variables
-            updateDashboardFromZoom(zoom);
-        }, { passive: false });
-
-        // -------- Reset --------
-        const resetBtn = document.getElementById("resetCamBtn");
-        if (resetBtn) {
-            resetBtn.addEventListener("click", () => {
-                yaw = 0;
-                pitch = MIN_PITCH;
-                zoom = 1400;
-                panX = 0;
-                panY = 0;
-                lastMousePx = canvas.width * 0.5;
-                lastMousePy = canvas.height * 0.5;
-            });
-        }
-
-        // -------- Apply to GPU --------
-        window.camera = (mat4, GPUResources, device, matrix) => {
-            pitch = autoPitchFromZoom();
-
-            const currentFov = autoFovFromZoom();
-            const currentAspect = canvas.width / canvas.height;
-
-            mat4.perspectiveZO(matrix.projection, currentFov, currentAspect, near, far);
-            device.queue.writeBuffer(GPUResources.buffer.camera, 0, matrix.projection);
-
-            const up = [0, 0, 1];
-            const anchor = [panX, panY, 0];
-            const lookAhead = 60.0;
-
-            let eye, target;
-
-            if (pitch < 0) {
-                const eyeHeight = Math.max(2.0, Math.sin(-pitch) * zoom);
-                const eyeBack = Math.max(0.0, Math.cos(-pitch) * zoom);
-
-                eye = [
-                    anchor[0],
-                    anchor[1] - eyeBack,
-                    anchor[2] + eyeHeight
-                ];
-
-                target = [
-                    anchor[0],
-                    anchor[1] + lookAhead,
-                    anchor[2] + lookAhead * Math.tan(pitch * 0.35)
-                ];
-            } else {
-                const tHead = clamp(pitch / MAX_PITCH, 0, 1);
-                const kHead = easeInOut(tHead);
-
-                const FIXED_EYE_HEIGHT = 2.0;
-                const eyeBackHead = lerp(20.0, 75.0, kHead);
-
-                eye = [
-                    anchor[0],
-                    anchor[1] - eyeBackHead,
-                    anchor[2] + FIXED_EYE_HEIGHT
-                ];
-
-                target = [
-                    eye[0],
-                    eye[1] + lookAhead,
-                    eye[2] + lookAhead * Math.tan(pitch)
-                ];
-            }
-
-            matrix.view = mat4.create();
-            mat4.lookAt(matrix.view, eye, target, up);
-            device.queue.writeBuffer(GPUResources.buffer.camera, 64, matrix.view);
-
-            matrix.world = mat4.create();
-            mat4.multiply(matrix.world, matrix.world, matrix.transform);
-            device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world);
-        };
-    })();
-
-    /* == Interaction == */
-    let mouseX = 0, mouseY = 0, hovered = 0, id_last_hover = 0
-    {
-        canvas.addEventListener("mousemove", (e) => {
-            const r = canvas.getBoundingClientRect();
-            mouseX = (e.clientX - r.left) / r.width;
-            mouseY = (e.clientY - r.top) / r.height;
-            // console.log(`mouseX: ${mouseX}, mouseY: ${mouseY}`)
-        })
-
-        canvas.addEventListener('mouseleave', () => {
-            hovered = 0;
-        });
-
-        let id_selected = 0;
-        const interactionU32 = new Uint32Array(4)
-        const hover = async (px, py) => {
-            if (GPUResources.data.rendering.indexByteOffset <= 0) {
-                id_selected = 0;
-                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, new Uint32Array([id_selected, 0, 0, 0]));
-                return;
-            }
-
-            const encoder = device.createCommandEncoder()
-
-            const renderPass = encoder.beginRenderPass({
-                colorAttachments: [{
-                    view: texture.hover.createView(),
-                    loadOp: `clear`,
-                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                    storeOp: `store`,
-                }],
-                depthStencilAttachment: {
-                    view: texture.depth.createView(),
-                    depthLoadOp: `clear`,
-                    depthClearValue: 1.0,
-                    depthStoreOp: `store`,
-                }
-            })
-
-            renderPass.setPipeline(GPUResources.renderPipeline.interaction)
-            renderPass.setBindGroup(0, GPUResources.bindGroup.global)
-            renderPass.setVertexBuffer(0, GPUResources.buffer.vertex)
-            renderPass.setVertexBuffer(1, GPUResources.buffer.vertexId)
-            renderPass.setIndexBuffer(GPUResources.buffer.indices, `uint32`)
-            renderPass.drawIndexed(GPUResources.data.rendering.indexByteOffset / 4, 1, 0, 0, 0);
-            renderPass.end()
-
-            encoder.copyTextureToBuffer(
-                {
-                    texture: texture.hover,
-                    origin: { x: px, y: py }
-                },
-                {
-                    buffer: GPUResources.buffer.hover,
-                    bytesPerRow: 256
-                },
-                {
-                    width: 1,
-                    height: 1,
-                    depthOrArrayLayers: 1
-                }
-            )
-
-            device.queue.submit([encoder.finish()])
-            await GPUResources.buffer.hover.mapAsync(GPUMapMode.READ)
-            const copy = GPUResources.buffer.hover.getMappedRange(0, 4)
-            id_selected = new Uint32Array(copy)[0] >>> 0
-            GPUResources.buffer.hover.unmap()
-            interactionU32[0] = id_selected;
-            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
-
-            id_last_hover = id_selected
-            return id_selected
-        }
-
-        window.interaction = async (time) => {
-
-            if (mouseX < 0 || mouseX > 1 || mouseY < 0 || mouseY > 1) {
-                interactionU32[0] = 0;
-                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
-                return;
-            }
-
-            const px = Math.floor(mouseX * canvas.width)
-            const py = Math.floor(mouseY * canvas.height)
-
-            const id = await hover(px, py)
-
-            const data_interaction = new Uint32Array(4)
-            data_interaction[0] = id
-            // console.log(`id: ${id}`)
-            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, data_interaction)
-        }
-    }
 
     /* == Environmental Rendering (fast optical-flow-like version) == */
     {
@@ -1658,6 +1224,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 // groundEl.style.transform = `rotateX(${24.1}deg) scale(${1.8})`;
                 groundEl.style.setProperty('--rx', `${24.1}deg`);
                 groundEl.style.setProperty('--s', `${1.8}`);
+                skyEl.style.display = 'none';
+                blockerEl.style.display = 'none';
                 return;
             }
 
@@ -2032,6 +1600,439 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         start();
+    }
+
+    /* == Camera Controller == */
+    (() => {
+        // -------- State --------
+        let yaw = 0;
+        window.pitch = -1.15;
+        window.zoom = 1400;
+        let panX = 0, panY = 0;
+
+        // 鼠标在 canvas 上的像素位置（用于“按鼠标位置缩放”）
+        let lastMousePx = canvas.width * 0.5;
+        let lastMousePy = canvas.height * 0.5;
+
+        // -------- Limits --------
+        const MIN_ZOOM = 10;
+        const MAX_ZOOM = 19300;
+        const VIEW_CHANGE_ZOOM = 150; // 从这里开始视角变化，同时停止跟随鼠标缩放
+
+        const MIN_PITCH = -1.15; // 远处俯视
+        const MAX_PITCH = 0.06;  // 如果你要 10°，改成 Math.PI / 18
+
+        const PAN_SENS = 1.0;
+        const WHEEL_ZOOM_K = 0.0005;
+
+        const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+        const lerp = (a, b, t) => a + (b - a) * t;
+
+        function easeInOut(t) {
+            return t * t * (3 - 2 * t);
+        }
+
+        function pitchFromZoom(zoomValue) {
+            if (zoomValue > VIEW_CHANGE_ZOOM) return MIN_PITCH;
+
+            const t = 1 - (zoomValue - MIN_ZOOM) / (VIEW_CHANGE_ZOOM - MIN_ZOOM);
+            const k = easeInOut(clamp(t, 0, 1));
+
+            return lerp(MIN_PITCH, MAX_PITCH, k);
+        }
+
+        function autoPitchFromZoom() {
+            return pitchFromZoom(zoom);
+        }
+
+        function fovFromPitch(pitchValue) {
+            const BASE_FOV = 30 * Math.PI / 180;
+            const TELE_FOV = 9 * Math.PI / 180;
+
+            if (pitchValue < 0) return BASE_FOV;
+
+            const t = clamp(pitchValue / MAX_PITCH, 0, 1);
+            const k = easeInOut(t);
+
+            return lerp(BASE_FOV, TELE_FOV, k);
+        }
+
+        function autoFovFromZoom() {
+            return fovFromPitch(pitch);
+        }
+
+        function panScale() {
+            const t = clamp((zoom - MIN_ZOOM) / (MAX_ZOOM - MIN_ZOOM), 0, 1);
+            return lerp(0.15, 12.0, t);
+        }
+
+        function solveCameraState(zoomValue, panXValue, panYValue) {
+            const pitchValue = pitchFromZoom(zoomValue);
+            const fovValue = fovFromPitch(pitchValue);
+
+            const up = [0, 0, 1];
+            const anchor = [panXValue, panYValue, 0];
+            const lookAhead = 60.0;
+
+            let eye, target;
+
+            if (pitchValue < 0) {
+                const eyeHeight = Math.max(2.0, Math.sin(-pitchValue) * zoomValue);
+                const eyeBack = Math.max(0.0, Math.cos(-pitchValue) * zoomValue);
+
+                eye = [
+                    anchor[0],
+                    anchor[1] - eyeBack,
+                    anchor[2] + eyeHeight
+                ];
+
+                target = [
+                    anchor[0],
+                    anchor[1] + lookAhead,
+                    anchor[2] + lookAhead * Math.tan(pitchValue * 0.35)
+                ];
+            } else {
+                const tHead = clamp(pitchValue / MAX_PITCH, 0, 1);
+                const kHead = easeInOut(tHead);
+
+                const FIXED_EYE_HEIGHT = 2.0;
+                const eyeBackHead = lerp(20.0, 70.0, kHead);
+
+                eye = [
+                    anchor[0],
+                    anchor[1] - eyeBackHead,
+                    anchor[2] + FIXED_EYE_HEIGHT
+                ];
+
+                target = [
+                    eye[0],
+                    eye[1] + lookAhead,
+                    eye[2] + lookAhead * Math.tan(pitchValue)
+                ];
+            }
+
+            return { pitchValue, fovValue, eye, target, up };
+        }
+
+        function unprojectPoint(px, py, ndcZ, invVP) {
+            const x = (px / canvas.width) * 2 - 1;
+            const y = 1 - (py / canvas.height) * 2;
+
+            const v = [x, y, ndcZ, 1];
+
+            const out = [
+                invVP[0] * v[0] + invVP[4] * v[1] + invVP[8] * v[2] + invVP[12] * v[3],
+                invVP[1] * v[0] + invVP[5] * v[1] + invVP[9] * v[2] + invVP[13] * v[3],
+                invVP[2] * v[0] + invVP[6] * v[1] + invVP[10] * v[2] + invVP[14] * v[3],
+                invVP[3] * v[0] + invVP[7] * v[1] + invVP[11] * v[2] + invVP[15] * v[3],
+            ];
+
+            const w = out[3];
+            if (Math.abs(w) < 1e-8) return null;
+
+            return [out[0] / w, out[1] / w, out[2] / w];
+        }
+
+        function screenToGround(px, py, zoomValue, panXValue, panYValue) {
+            const { fovValue, eye, target, up } = solveCameraState(zoomValue, panXValue, panYValue);
+
+            const proj = mat4.create();
+            mat4.perspectiveZO(proj, fovValue, canvas.width / canvas.height, near, far);
+
+            const view = mat4.create();
+            mat4.lookAt(view, eye, target, up);
+
+            const vp = mat4.create();
+            mat4.multiply(vp, proj, view);
+
+            const invVP = mat4.create();
+            if (!mat4.invert(invVP, vp)) return null;
+
+            const pNear = unprojectPoint(px, py, 0, invVP);
+            const pFar = unprojectPoint(px, py, 1, invVP);
+            if (!pNear || !pFar) return null;
+
+            const dir = [
+                pFar[0] - pNear[0],
+                pFar[1] - pNear[1],
+                pFar[2] - pNear[2]
+            ];
+
+            if (Math.abs(dir[2]) < 1e-6) return null;
+
+            const t = -pNear[2] / dir[2];
+            if (!Number.isFinite(t)) return null;
+
+            return [
+                pNear[0] + dir[0] * t,
+                pNear[1] + dir[1] * t,
+                0
+            ];
+        }
+
+        function zoomAtMouse(deltaY) {
+            const oldZoom = zoom;
+            let newZoom = oldZoom / Math.exp(deltaY * WHEEL_ZOOM_K);
+            newZoom = clamp(newZoom, MIN_ZOOM, MAX_ZOOM);
+
+            // 只有“纯俯视阶段”才按鼠标位置缩放
+            // 一旦开始视角变化（zoom <= 150），就原地变焦
+            if (oldZoom > VIEW_CHANGE_ZOOM && newZoom > VIEW_CHANGE_ZOOM) {
+                const before = screenToGround(lastMousePx, lastMousePy, oldZoom, panX, panY);
+
+                zoom = newZoom;
+
+                const after = screenToGround(lastMousePx, lastMousePy, zoom, panX, panY);
+
+                if (before && after) {
+                    panX += before[0] - after[0];
+                    panY += before[1] - after[1];
+                }
+            } else {
+                zoom = newZoom;
+            }
+        }
+
+        // -------- Event --------
+        canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+        function updateGroundTransform(pitch, yawCss) {
+            groundEl.style.setProperty('--rz', `${yawCss}deg`);
+        }
+
+        let yawCss = 0;
+        let isDraggingYaw = false;
+        let dragStartX = 0;
+        let yawStart = 0;
+
+        canvas.addEventListener("mousedown", (e) => {
+            // 左键或中键开始拖动
+            if (e.button === 0 || e.button === 1) {
+                isDraggingYaw = true;
+                dragStartX = e.clientX;
+                yawStart = yawCss;
+            }
+        });
+
+        window.addEventListener("mouseup", () => {
+            isDraggingYaw = false;
+        });
+
+        canvas.addEventListener("mousemove", (e) => {
+            const r = canvas.getBoundingClientRect();
+            const sx = (e.clientX - r.left) / r.width;
+            const sy = (e.clientY - r.top) / r.height;
+
+            lastMousePx = sx * canvas.width;
+            lastMousePy = sy * canvas.height;
+
+            // 左键 / 中键拖动平移
+            if (e.buttons === 1 || e.buttons === 4) {
+                const s = panScale();
+                panX -= e.movementX * PAN_SENS * s;
+                panY += e.movementY * PAN_SENS * s;
+            }
+
+            // 左键 / 中键按下后，根据相对水平位移旋转 ground
+            if (isDraggingYaw && (e.buttons === 1 || e.buttons === 4)) {
+                const dx = e.clientX - dragStartX;
+
+                // 向右拖 = 逆时针；向左拖 = 顺时针
+                yawCss = yawStart - dx * 0.1;
+
+                updateGroundTransform(pitch, yawCss);
+            }
+        });
+
+        canvas.addEventListener("wheel", (e) => {
+            e.preventDefault();
+
+            const r = canvas.getBoundingClientRect();
+            const sx = (e.clientX - r.left) / r.width;
+            const sy = (e.clientY - r.top) / r.height;
+
+            lastMousePx = sx * canvas.width;
+            lastMousePy = sy * canvas.height;
+
+            zoomAtMouse(e.deltaY);
+
+            console.log(
+                "zoom:", zoom,
+                "pitch:", pitchFromZoom(zoom),
+                "panX:", panX,
+                "panY:", panY
+            );
+
+            // Control KPI/chart variables
+            updateDashboardFromZoom(zoom);
+        }, { passive: false });
+
+        // -------- Reset --------
+        const resetBtn = document.getElementById("resetCamBtn");
+        if (resetBtn) {
+            resetBtn.addEventListener("click", () => {
+                yaw = 0;
+                pitch = MIN_PITCH;
+                zoom = 1400;
+                panX = 0;
+                panY = 0;
+                lastMousePx = canvas.width * 0.5;
+                lastMousePy = canvas.height * 0.5;
+                adjust_horizon(-1.15)
+            });
+        }
+
+        // -------- Apply to GPU --------
+        window.camera = (mat4, GPUResources, device, matrix) => {
+            pitch = autoPitchFromZoom();
+
+            const currentFov = autoFovFromZoom();
+            const currentAspect = canvas.width / canvas.height;
+
+            mat4.perspectiveZO(matrix.projection, currentFov, currentAspect, near, far);
+            device.queue.writeBuffer(GPUResources.buffer.camera, 0, matrix.projection);
+
+            const up = [0, 0, 1];
+            const anchor = [panX, panY, 0];
+            const lookAhead = 60.0;
+
+            let eye, target;
+
+            if (pitch < 0) {
+                const eyeHeight = Math.max(2.0, Math.sin(-pitch) * zoom);
+                const eyeBack = Math.max(0.0, Math.cos(-pitch) * zoom);
+
+                eye = [
+                    anchor[0],
+                    anchor[1] - eyeBack,
+                    anchor[2] + eyeHeight
+                ];
+
+                target = [
+                    anchor[0],
+                    anchor[1] + lookAhead,
+                    anchor[2] + lookAhead * Math.tan(pitch * 0.35)
+                ];
+            } else {
+                const tHead = clamp(pitch / MAX_PITCH, 0, 1);
+                const kHead = easeInOut(tHead);
+
+                const FIXED_EYE_HEIGHT = 2.0;
+                const eyeBackHead = lerp(20.0, 75.0, kHead);
+
+                eye = [
+                    anchor[0],
+                    anchor[1] - eyeBackHead,
+                    anchor[2] + FIXED_EYE_HEIGHT
+                ];
+
+                target = [
+                    eye[0],
+                    eye[1] + lookAhead,
+                    eye[2] + lookAhead * Math.tan(pitch)
+                ];
+            }
+
+            matrix.view = mat4.create();
+            mat4.lookAt(matrix.view, eye, target, up);
+            device.queue.writeBuffer(GPUResources.buffer.camera, 64, matrix.view);
+
+            matrix.world = mat4.create();
+            mat4.multiply(matrix.world, matrix.world, matrix.transform);
+            device.queue.writeBuffer(GPUResources.buffer.transform, 0, matrix.world);
+        };
+    })();
+
+    /* == Interaction == */
+    let mouseX = 0, mouseY = 0, id_last_hover = 0
+    {
+        canvas.addEventListener("mousemove", (e) => {
+            const r = canvas.getBoundingClientRect();
+            mouseX = (e.clientX - r.left) / r.width;
+            mouseY = (e.clientY - r.top) / r.height;
+            // console.log(`mouseX: ${mouseX}, mouseY: ${mouseY}`)
+        })
+
+        let id_selected = 0;
+        const interactionU32 = new Uint32Array(4)
+        const hover = async (px, py) => {
+            if (GPUResources.data.rendering.indexByteOffset <= 0) {
+                id_selected = 0;
+                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, new Uint32Array([id_selected, 0, 0, 0]));
+                return;
+            }
+
+            const encoder = device.createCommandEncoder()
+
+            const renderPass = encoder.beginRenderPass({
+                colorAttachments: [{
+                    view: texture.hover.createView(),
+                    loadOp: `clear`,
+                    clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                    storeOp: `store`,
+                }],
+                depthStencilAttachment: {
+                    view: texture.depth.createView(),
+                    depthLoadOp: `clear`,
+                    depthClearValue: 1.0,
+                    depthStoreOp: `store`,
+                }
+            })
+
+            renderPass.setPipeline(GPUResources.renderPipeline.interaction)
+            renderPass.setBindGroup(0, GPUResources.bindGroup.global)
+            renderPass.setVertexBuffer(0, GPUResources.buffer.vertex)
+            renderPass.setVertexBuffer(1, GPUResources.buffer.vertexId)
+            renderPass.setIndexBuffer(GPUResources.buffer.indices, `uint32`)
+            renderPass.drawIndexed(GPUResources.data.rendering.indexByteOffset / 4, 1, 0, 0, 0);
+            renderPass.end()
+
+            encoder.copyTextureToBuffer(
+                {
+                    texture: texture.hover,
+                    origin: { x: px, y: py }
+                },
+                {
+                    buffer: GPUResources.buffer.hover,
+                    bytesPerRow: 256
+                },
+                {
+                    width: 1,
+                    height: 1,
+                    depthOrArrayLayers: 1
+                }
+            )
+
+            device.queue.submit([encoder.finish()])
+            await GPUResources.buffer.hover.mapAsync(GPUMapMode.READ)
+            const copy = GPUResources.buffer.hover.getMappedRange(0, 4)
+            id_selected = new Uint32Array(copy)[0] >>> 0
+            GPUResources.buffer.hover.unmap()
+            interactionU32[0] = id_selected;
+            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
+
+            id_last_hover = id_selected
+            return id_selected
+        }
+
+        window.interaction = async (time) => {
+
+            if (mouseX < 0 || mouseX > 1 || mouseY < 0 || mouseY > 1) {
+                interactionU32[0] = 0;
+                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
+                return;
+            }
+
+            const px = Math.floor(mouseX * canvas.width)
+            const py = Math.floor(mouseY * canvas.height)
+
+            const id = await hover(px, py)
+
+            const data_interaction = new Uint32Array(4)
+            data_interaction[0] = id
+            // console.log(`id: ${id}`)
+            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, data_interaction)
+        }
     }
 
     /* == Render Loop == */
