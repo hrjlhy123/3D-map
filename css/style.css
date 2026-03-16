@@ -1,3 +1,9 @@
+:root {
+  --rx: 21.8deg;
+  --rz: 0deg;
+  --s: 1.8;
+}
+
 html,
 body {
   margin: 0;
@@ -5,82 +11,126 @@ body {
   width: 100%;
   display: flex;
   flex-direction: row;
+  font-family: Arial, sans-serif;
+  overflow: hidden;
 }
 
 body {
-  padding: 1rem;
+  padding: 2rem;
   box-sizing: border-box;
   background:
     radial-gradient(circle at 20% 80%, #a6c6dd 0%, transparent 40%),
     linear-gradient(180deg, #b7d1e6 0%, #d5e6f2 50%, #eef6fb 100%);
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
 }
 
 .panel_left {
   flex: 1;
   display: flex;
   flex-direction: column;
-  justify-content: space-around;
+  justify-content: space-between;
   align-items: center;
+  gap: 2rem;
+}
+.panel_left_top {
+  margin: 0 4rem 0 0;
+  padding: 0 0 0 1rem;
 }
 
-.panel_left > .kpi_card {
-  width: 160px;
-  height: 84px;
-  background: rgba(255, 255, 255, 0.88);
-  border-radius: 18px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 34px;
+.panel_left_top > * {
+  margin: 0;
+}
+
+.panel_left_top > p {
+  margin: 0;
+  line-height: 2.75rem;
+  font-size: 48px;
   font-weight: 700;
   color: #2f5f88;
-  pointer-events: auto;
+}
+
+.panel_left_top > h4 {
+  padding: .5rem .25rem 0;
+  font-size: 12px;
+  color: #3c5f7f;
+  font-weight: 200;
+}
+
+.panel_left_bottom {
+  box-sizing: border-box;
+  gap: 1rem;
+  width: 100%;
+  flex-grow: 1;
+  padding: 0 1rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
 }
 
 .panel_right {
   flex: 3;
   display: flex;
   flex-direction: column;
+  gap: 2rem;
   /* display: none; */
 }
 
 .panel_right_top {
-  flex: 1;
+  /* flex: 1; */
+  flex: 0 0 1;
   display: flex;
   flex-direction: row;
-  justify-content: space-around;
-}
-
-.panel_right_top > .chart_card {
-  flex: 1l;
+  justify-content: space-between;
 }
 
 #map {
   width: 100%;
-  height: calc(100% - 100px);
+  height: 100%;
   flex: 3;
+  flex-grow: 1;
   position: relative;
+  border-radius: 1rem;
+  overflow: hidden;
   /* transform: skew(-30deg, 0); */
 }
 
 #building {
   width: 100%;
-  height: calc(100% - 100px);
+  height: 100%;
   display: block;
-  filter: blur(0.5px);
+  filter: blur(0.2px);
+}
+
+#log {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  text-align: right;
+  padding: 1rem;
+  margin: 0;
+  color: #fff;
+  font-family: monospace;
+  text-shadow:
+    0 0 0.5rem #2f5f88,
+    0 0 1rem #2f5f88;
 }
 
 #bg {
   position: absolute;
   width: 100%;
-  height: calc(100% - 100px);
+  height: 100%;
   top: 0;
   z-index: -1;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: rgba(85, 85, 85, 0.8);
+  /* background: rgba(85, 85, 85, 0.8); */
+}
+
+#source_sky {
+  display: none;
 }
 
 #sky {
@@ -89,30 +139,47 @@ body {
   /* height: 75%; */
   background: url(../img/sky1.png) top / 100% 100% no-repeat;
   overflow: hidden;
-  z-index: -1;
+  z-index: 1;
   position: relative;
+  opacity: 0.5;
 }
 
-#source_sky {
-  display: none;
+#blocker {
+  width: 100%;
+  position: absolute;
+  top: 0;
+  background:
+    radial-gradient(circle at 20% 80%, #a6c6dd 0%, transparent 40%),
+    linear-gradient(180deg, #b7d1e6 0%, #d5e6f2 50%, #eef6fb 100%);
 }
 
 #ground {
-  display: none;
+  position: absolute;
+  opacity: 0;
+  top: -100%;
   width: 100%;
-  /* height: 25%; */
-  background: url(../img/ground.jpg) bottom / 100% 100% no-repeat;
-  filter: blur(1px) contrast(0.9) grayscale(0.2) brightness(0.5);
-  scale: 1.01;
+  height: 200%;
+  background-image: url("../img/concrete_floor_worn_02_diff_2k.avif");
+  background-repeat: no-repeat;
+  background-position: center bottom;
+  background-size: auto 200%;
+  /* transform-origin: top center; */
+  transform-origin: center center;
+  filter: grayscale(0.2) brightness(0.9);
   box-sizing: border-box;
   flex-grow: 1;
+
+  /* transform: rotateX(21.8deg) scale(1.8); */
+  transform: rotateX(var(--rx)) rotateZ(var(--rz)) scale(var(--s));
+  will-change: transform, opacity;
+  z-index: -1;
 }
 
 #progress {
-  /* position: fixed; */
+  position: fixed;
   left: 0;
   bottom: 0;
-  height: 8px;
+  height: 0.5rem;
   width: 0%;
 
   background: linear-gradient(to bottom, #7fd3ff 0%, #4da9e6 40%, #2d7bb5 100%);
@@ -122,4 +189,11 @@ body {
     inset 0 -2px 4px rgba(0, 0, 0, 0.3);
 
   transition: width 0.05s linear;
+}
+
+.button {
+  /* padding: 1rem 0 0; */
+  padding: 0 0 1rem 1rem;
+  position: absolute;
+  bottom: 0;
 }

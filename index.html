@@ -5,34 +5,122 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Document</title>
         <link rel="stylesheet" href="./css/style.css">
+        <link rel="stylesheet" href="./css/dashboard.css">
     </head>
     <body>
         <div class="panel_left">
-            <div class="kpi_card">$8.75M</div>
-            <div class="kpi_card">$4.18M</div>
-            <div class="kpi_card">$2.32M</div>
-            <div class="kpi_card">$2.25M</div>
+            <div class="panel_left_top">
+                <p>Read Estate Dashboard</p>
+                <h4>For technical demonstration purposes only; data is for
+                    reference only.</h4>
+            </div>
+            <!-- <button id="updateBtn">Update</button> -->
+            <div class="panel_left_bottom">
+                <div class="kpi_card">
+                    <div class="kpi_title">Total Property Value</div>
+                    <div class="kpi_inner">
+                        <!-- front -->
+                        <div class="kpi_front">
+                            <span class="kpi_currency">$</span>
+                            <div id="kpi1" class="kpi_number"></div>
+                            <div id="kpi1Unit" class="kpi_unit"></div>
+                        </div>
+
+                        <!-- back -->
+                        <div class="kpi_back">
+                            <span id="kpi1Real"></span>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div class="kpi_card">
+                    <div class="kpi_title">Average Property Price</div>
+                    <div class="kpi_inner">
+
+                        <!-- front -->
+                        <div class="kpi_front">
+                            <span class="kpi_currency">$</span>
+                            <div id="kpi2" class="kpi_number"></div>
+                            <div id="kpi2Unit" class="kpi_unit"></div>
+                        </div>
+
+                        <!-- back -->
+                        <div class="kpi_back">
+                            <span id="kpi2Real"></span>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div class="kpi_card">
+                    <div class="kpi_title">Total Rental Revenue</div>
+                    <div class="kpi_inner">
+
+                        <!-- front -->
+                        <div class="kpi_front">
+                            <span class="kpi_currency">$</span>
+                            <div id="kpi3" class="kpi_number"></div>
+                            <div id="kpi3Unit" class="kpi_unit"></div>
+                        </div>
+
+                        <!-- back -->
+                        <div class="kpi_back">
+                            <span id="kpi3Real"></span>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div class="kpi_card">
+                    <div class="kpi_title">Maintenance Cost</div>
+                    <div class="kpi_inner">
+
+                        <!-- front -->
+                        <div class="kpi_front">
+                            <span class="kpi_currency">$</span>
+                            <div id="kpi4" class="kpi_number"></div>
+                            <div id="kpi4Unit" class="kpi_unit"></div>
+                        </div>
+
+                        <!-- back -->
+                        <div class="kpi_back">
+                            <span id="kpi4Real"></span>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+
         </div>
         <div class="panel_right">
             <div class="panel_right_top">
-                <div class="chart_card">
+                <div class="chart_box">
                     <canvas id="lineChart"></canvas>
                 </div>
-                <div class="chart_card">
+
+                <div class="chart_box">
                     <canvas id="barChart"></canvas>
+                </div>
+
+                <div class="chart_box">
+                    <canvas id="donutChart"></canvas>
                 </div>
             </div>
             <div id="map">
                 <canvas id="building"></canvas>
                 <div id="progress"></div>
-                <button id="startBtn">Start</button>
-                <button id="stopBtn">Stop</button>
-                <button id="resetCamBtn">Reset Camera</button>
+                <div class="button">
+                    <button id="startBtn">Start</button>
+                    <button id="stopBtn">Stop</button>
+                    <button id="resetCamBtn">Reset Camera</button>
+                </div>
                 <pre id="log"></pre>
                 <div id="bg">
                     <video autoplay muted loop playsinline id="source_sky"
                         src="./vid/sky.mp4"></video>
                     <canvas id="sky"></canvas>
+                    <div id="blocker"></div>
                     <div id="ground"></div>
                 </div>
             </div>

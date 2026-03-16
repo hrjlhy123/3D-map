@@ -32,7 +32,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 throw new Error(`Could not obtain GPU adapter`)
             })()
 
-            device = await adapter.requestDevice() ?? (() => {
+            device = await adapter.requestDevice({
+                requiredLimits: {
+                    maxBufferSize: 536870912, // 512MB
+                },
+            }) ?? (() => {
                 throw new Error(`Could not create GPU device`)
             })()
         }
@@ -81,7 +85,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
             })
             GPUResources.buffer.vertex = device.createBuffer({
-                size: 268435456, // 256MB x 1024 x 1024
+                size: 536870912, // 512MB x 1024 x 1024
                 usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
             })
             GPUResources.buffer.indices = device.createBuffer({
@@ -421,21 +425,11 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         console.log(`centerLon: ${centerLon}, centerLat: ${centerLat}`)
 
         const POOL_TARGET = 10_000_000;     // 池子凑到多少个 building 就 flush 一次（你可调 300~3000）
-        const POOL_MAX_HOLD_MS = 5_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
+        const POOL_MAX_HOLD_MS = 4_000;  // 最多憋多久就必须 flush（避免“憋很久一坨”）
 
         let pool = [];
         let poolLastFlush = performance.now();
 
-        // function buildingDist2(msg) {
-        //     // msg.parts: [ {data:[lon,lat,...], holes, indices}, ... ]
-        //     const p0 = msg?.parts?.[0];
-        //     const data = p0?.data;
-        //     if (!data || data.length < 2) return Number.POSITIVE_INFINITY;
-        //     const lon = data[0], lat = data[1];
-        //     const dx = lon - centerLon;
-        //     const dy = lat - centerLat;
-        //     return dx * dx + dy * dy;
-        // }
         function buildingDist2(msg) {
             const p0 = msg?.parts?.[0];
             const data = p0?.data;
@@ -497,9 +491,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 const [x, y, z] = ecefToENU(ecef, enuFrame);
 
                 const o = i * 6
-                // positions_and_normals[o + 0] = lon
-                // positions_and_normals[o + 1] = lat
-                // positions_and_normals[o + 2] = z0
                 positions_and_normals[o + 0] = x
                 positions_and_normals[o + 1] = y
                 positions_and_normals[o + 2] = z
@@ -522,22 +513,113 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 }
             }
         }
-        //// 3D building
-        const part_extrude = (part, height) => {
+
+        // 3D Building DNA
+        const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+        const lerp = (a, b, t) => a + (b - a) * t
+
+        const sub3 = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+        const cross3 = (ax, ay, az, bx, by, bz) => [
+            ay * bz - az * by,
+            az * bx - ax * bz,
+            ax * by - ay * bx,
+        ]
+        const norm3 = (x, y, z) => {
+            const len = Math.hypot(x, y, z)
+            if (len < 1e-12) return [0, 0, 1]
+            return [x / len, y / len, z / len]
+        }
+        const norm2 = (x, y) => {
+            const len = Math.hypot(x, y)
+            if (len < 1e-12) return [0, 0]
+            return [x / len, y / len]
+        }
+        const lerp3 = (a, b, t) => [
+            lerp(a[0], b[0], t),
+            lerp(a[1], b[1], t),
+            lerp(a[2], b[2], t),
+        ]
+
+        const hashString32 = (str) => {
+            let h = 2166136261 >>> 0
+            for (let i = 0; i < str.length; i++) {
+                h ^= str.charCodeAt(i)
+                h = Math.imul(h, 16777619)
+            }
+            h ^= h >>> 13
+            h = Math.imul(h, 1274126177)
+            h ^= h >>> 16
+            return h >>> 0
+        }
+
+        const seeded01 = (seed, tag = 0) => {
+            let h = seed >>> 0
+            h ^= Math.imul((tag + 1) >>> 0, 1597334677) >>> 0
+            h ^= h >>> 15
+            h = Math.imul(h, 2246822519)
+            h ^= h >>> 13
+            h = Math.imul(h, 3266489917)
+            h ^= h >>> 16
+            return (h >>> 0) / 4294967295
+        }
+
+        // random point in quad interior, kept away from boundary
+        function safePointInQuad(a, b, c, d, seedA, seedB, margin = 0.30) {
+            const u = lerp(margin, 1 - margin, seeded01(seedA, 11))
+            const v = lerp(margin, 1 - margin, seeded01(seedB, 12))
+            const ab = lerp3(a, b, u)
+            const dc = lerp3(d, c, u)
+            return lerp3(ab, dc, v)
+        }
+
+        function createBuildingStyle(building, fallbackHeight = 15) {
+            const key = (building?.id?.osm ?? building?.id?.h3 ?? `gpu_${Math.random()}`).toString()
+            const seed = hashString32(key)
+
+            const rawHeight =
+                Number(building?.height) ||
+                Number(building?.properties?.height) ||
+                Number(building?.properties?.['building:height']) ||
+                0
+
+            const rawLevels =
+                Number(building?.properties?.levels) ||
+                Number(building?.properties?.['building:levels']) ||
+                0
+
+            let height = rawHeight
+            if (!(height > 0)) {
+                if (rawLevels > 0) height = rawLevels * 3.2
+                else height = lerp(8, 34, seeded01(seed, 1))
+            }
+
+            height = clamp(height * lerp(0.9, 1.2, seeded01(seed, 2)), 6, 60)
+
+            return {
+                seed,
+                height,
+                wallDepth: lerp(0.2, 0.4, seeded01(seed, 3)),
+            }
+        }
+
+        function part_extrude(part, styleOrHeight = 15) {
             if (!Array.isArray(part.data) || part.data.length < 6) {
                 throw new Error(`part.data must contain at least 3 points (>= 6 numbers).`)
             }
             if (!Array.isArray(part.indices) || part.indices.length < 3) {
                 throw new Error(`part.indices must contain at least 1 triangle (>= 3 numbers).`)
             }
-            const vertexCount = Math.floor(part.data.length / 2)
 
-            // Normalize 2D vector (x, y). If too small, return (0, 0).
-            const norm2 = (x, y) => {
-                const len = Math.hypot(x, y)
-                if (len < 1e-12) return [0, 0]
-                return [x / len, y / len]
-            }
+            const STYLE = (typeof styleOrHeight === "number")
+                ? {
+                    seed: 1,
+                    height: styleOrHeight,
+                    wallDepth: 0.45,
+                }
+                : styleOrHeight
+
+            const height = STYLE.height
+            const vertexCount = Math.floor(part.data.length / 2)
 
             const positions_and_normals = []
             const indices = []
@@ -548,49 +630,67 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 return index
             }
 
-            const ringENU = [];
-            for (let i = 0; i < vertexCount; i++) {
-                const lon = part.data[i * 2 + 0];
-                const lat = part.data[i * 2 + 1];
-                const ecef = lonLatHeightToECEF(lon, lat, 0);
-                const [x, y, z] = ecefToENU(ecef, enuFrame);
-                ringENU.push([x, y, z]);
-            }
-
-            // ROOF vertices (shared)
-            const roofBase = 0
-            for (let i = 0; i < vertexCount; i++) {
-                const x = ringENU[i][0]
-                const y = ringENU[i][1]
-                vertex_push(x, y, height, 0, 0, 1)
-            }
-
-            // GROUND vertices (shared, optional)
-            const groundBase = positions_and_normals.length / 6
-            for (let i = 0; i < vertexCount; i++) {
-                const x = ringENU[i][0]
-                const y = ringENU[i][1]
-                vertex_push(x, y, 0, 0, 0, -1)
-            }
-
-            // ROOF indices
-            for (let k = 0; k < part.indices.length; k += 3) {
-                indices.push(
-                    roofBase + part.indices[k + 0],
-                    roofBase + part.indices[k + 1],
-                    roofBase + part.indices[k + 2]
+            const triangle_push_flat = (a, b, c) => {
+                const ab = sub3(b, a)
+                const ac = sub3(c, a)
+                let [nx, ny, nz] = cross3(
+                    ab[0], ab[1], ab[2],
+                    ac[0], ac[1], ac[2]
                 )
+                    ;[nx, ny, nz] = norm3(nx, ny, nz)
+
+                const ia = vertex_push(a[0], a[1], a[2], nx, ny, nz)
+                const ib = vertex_push(b[0], b[1], b[2], nx, ny, nz)
+                const ic = vertex_push(c[0], c[1], c[2], nx, ny, nz)
+                indices.push(ia, ib, ic)
             }
 
-            // GROUND indices
+            const triangle_push_flat_rev = (a, b, c) => {
+                triangle_push_flat(a, c, b)
+            }
+
+            const ringENU = []
+            for (let i = 0; i < vertexCount; i++) {
+                const lon = part.data[i * 2 + 0]
+                const lat = part.data[i * 2 + 1]
+                const ecef = lonLatHeightToECEF(lon, lat, 0)
+                const [x, y, z] = ecefToENU(ecef, enuFrame)
+                ringENU.push([x, y, z])
+            }
+
+            // =========================
+            // ROOF (original, no random point)
+            // =========================
             for (let k = 0; k < part.indices.length; k += 3) {
-                const a = groundBase + part.indices[k + 0]
-                const b = groundBase + part.indices[k + 1]
-                const c = groundBase + part.indices[k + 2]
-                indices.push(a, c, b)
+                const ia = part.indices[k + 0]
+                const ib = part.indices[k + 1]
+                const ic = part.indices[k + 2]
+
+                const a = [ringENU[ia][0], ringENU[ia][1], height]
+                const b = [ringENU[ib][0], ringENU[ib][1], height]
+                const c = [ringENU[ic][0], ringENU[ic][1], height]
+
+                triangle_push_flat(a, b, c)
             }
 
-            // WALLS (iterate each ring separately)
+            // =========================
+            // GROUND
+            // =========================
+            for (let k = 0; k < part.indices.length; k += 3) {
+                const ia = part.indices[k + 0]
+                const ib = part.indices[k + 1]
+                const ic = part.indices[k + 2]
+
+                const a = [ringENU[ia][0], ringENU[ia][1], 0]
+                const b = [ringENU[ib][0], ringENU[ib][1], 0]
+                const c = [ringENU[ic][0], ringENU[ic][1], 0]
+
+                triangle_push_flat_rev(a, b, c)
+            }
+
+            // =========================
+            // WALLS: one safe random point per quad
+            // =========================
             const holeStarts = Array.isArray(part.holes) ? part.holes : []
             const ringStarts = [0, ...holeStarts]
             const ringEnds = [...holeStarts, vertexCount]
@@ -598,29 +698,45 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             for (let r = 0; r < ringStarts.length; r++) {
                 const start = ringStarts[r]
                 const end = ringEnds[r]
-
-                // ring must have at least 2 edges / 3 vertices
                 if (end - start < 3) continue
 
                 for (let i = start; i < end; i++) {
                     const j = (i + 1 < end) ? (i + 1) : start
 
-                    const xi = ringENU[i][0]
-                    const yi = ringENU[i][1]
-                    const xj = ringENU[j][0]
-                    const yj = ringENU[j][1]
+                    const p0 = ringENU[i]
+                    const p1 = ringENU[j]
 
-                    const dx = xj - xi
-                    const dy = yj - yi
+                    const a = [p0[0], p0[1], 0]
+                    const b = [p1[0], p1[1], 0]
+                    const c = [p1[0], p1[1], height]
+                    const d = [p0[0], p0[1], height]
+
+                    const dx = p1[0] - p0[0]
+                    const dy = p1[1] - p0[1]
+                    const edgeLen = Math.hypot(dx, dy)
+                    if (edgeLen < 1e-6) continue
+
                     const [nx, ny] = norm2(dy, -dx)
 
-                    const bi = vertex_push(xi, yi, 0, nx, ny, 0)
-                    const bj = vertex_push(xj, yj, 0, nx, ny, 0)
-                    const tj = vertex_push(xj, yj, height, nx, ny, 0)
-                    const ti = vertex_push(xi, yi, height, nx, ny, 0)
+                    const p = safePointInQuad(
+                        a, b, c, d,
+                        STYLE.seed + 4000 + i * 17 + r * 131,
+                        STYLE.seed + 5000 + i * 19 + r * 137,
+                        0.30
+                    )
 
-                    indices.push(bi, bj, tj)
-                    indices.push(bi, tj, ti)
+                    const depth = Math.min(STYLE.wallDepth, edgeLen * 0.28)
+                    const bump = depth * lerp(0.85, 1.10, seeded01(STYLE.seed, 6000 + i * 23 + r * 149))
+                    const sign = seeded01(STYLE.seed, 7000 + i * 29 + r * 151) > 0.5 ? 1 : -1
+
+                    p[0] += nx * bump * sign
+                    p[1] += ny * bump * sign
+
+                    // one point per wall quad -> 4 triangles
+                    triangle_push_flat(a, b, p)
+                    triangle_push_flat(b, c, p)
+                    triangle_push_flat(c, d, p)
+                    triangle_push_flat(d, a, p)
                 }
             }
 
@@ -630,10 +746,13 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 meta: {
                     vertexCount: positions_and_normals.length / 6,
                     triangleCount: indices.length / 3,
-                    height
+                    height,
+                    mode: "extrude_faceted_walls_only",
+                    seed: STYLE.seed,
                 }
             }
         }
+
         // Building ID
         let gpuCounter = 0, nextId = 1;                 // 0 留给“空地”
         const keyToId = new Map();      // "238093236" 或 "gpu_0" -> u32 id
@@ -671,7 +790,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 if (BUILDING_MODE === "flat") {
                     building.parts = building.parts.map(p => part_flat(p, 0))
                 } else if (BUILDING_MODE === "extrude") {
-                    building.parts = building.parts.map(p => part_extrude(p, 15))
+                    // building.parts = building.parts.map(p => part_extrude(p, 15))
+                    const style = createBuildingStyle(building, 15)
+                    building.parts = building.parts.map(p => part_extrude(p, style))
                 }
 
                 const key_building = key_building_get(building?.id?.osm)
@@ -723,16 +844,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 console.log(`Start rendering!`)
             }
         }
-
-        setInterval(() => {
-            console.log("[progress]", {
-                received: stats.received,
-                pending: GPUResources.data.pending.length,
-                processed: stats.processed,
-                errors: stats.errors,
-                lastIndex: stats.lastIndex,
-            });
-        }, 1000);
 
         /* === Camera/Transform Data === */
         {
@@ -972,7 +1083,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         // -------- State --------
         let yaw = 0;
         window.pitch = -1.15;
-        window.zoom = 19300;
+        window.zoom = 1400;
         let panX = 0, panY = 0;
 
         // 鼠标在 canvas 上的像素位置（用于“按鼠标位置缩放”）
@@ -1161,6 +1272,28 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         // -------- Event --------
         canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
+        function updateGroundTransform(pitch, yawCss) {
+            groundEl.style.setProperty('--rz', `${yawCss}deg`);
+        }
+
+        let yawCss = 0;
+        let isDraggingYaw = false;
+        let dragStartX = 0;
+        let yawStart = 0;
+
+        canvas.addEventListener("mousedown", (e) => {
+            // 左键或中键开始拖动
+            if (e.button === 0 || e.button === 1) {
+                isDraggingYaw = true;
+                dragStartX = e.clientX;
+                yawStart = yawCss;
+            }
+        });
+
+        window.addEventListener("mouseup", () => {
+            isDraggingYaw = false;
+        });
+
         canvas.addEventListener("mousemove", (e) => {
             const r = canvas.getBoundingClientRect();
             const sx = (e.clientX - r.left) / r.width;
@@ -1168,13 +1301,22 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
             lastMousePx = sx * canvas.width;
             lastMousePy = sy * canvas.height;
-        });
 
-        canvas.addEventListener("mousemove", (e) => {
-            if (e.buttons === 4 || e.buttons === 1) {
+            // 左键 / 中键拖动平移
+            if (e.buttons === 1 || e.buttons === 4) {
                 const s = panScale();
                 panX -= e.movementX * PAN_SENS * s;
                 panY += e.movementY * PAN_SENS * s;
+            }
+
+            // 左键 / 中键按下后，根据相对水平位移旋转 ground
+            if (isDraggingYaw && (e.buttons === 1 || e.buttons === 4)) {
+                const dx = e.clientX - dragStartX;
+
+                // 向右拖 = 逆时针；向左拖 = 顺时针
+                yawCss = yawStart - dx * 0.1;
+
+                updateGroundTransform(pitch, yawCss);
             }
         });
 
@@ -1196,6 +1338,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 "panX:", panX,
                 "panY:", panY
             );
+
+            // Control KPI/chart variables
+            updateDashboardFromZoom(zoom);
         }, { passive: false });
 
         // -------- Reset --------
@@ -1204,7 +1349,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             resetBtn.addEventListener("click", () => {
                 yaw = 0;
                 pitch = MIN_PITCH;
-                zoom = 800;
+                zoom = 1400;
                 panX = 0;
                 panY = 0;
                 lastMousePx = canvas.width * 0.5;
@@ -1369,203 +1514,237 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
     }
 
-    // progress bar
-    const btn = document.querySelector('#startBtn');
-    const bar = document.querySelector('#progress');
-    console.log(btn, bar);
-    btn.addEventListener("click", () => {
-        const start = performance.now();
-        const duration = 3000;
-
-        function update(now) {
-
-            const t = (now - start) / duration;
-            const progress = Math.min(t, 1);
-
-            bar.style.width = (progress * 100) + "%";
-
-            if (progress < 1) {
-                requestAnimationFrame(update);
-            }
-        }
-
-        requestAnimationFrame(update);
-    })
-
-    /* == Environmental Rendering == */
+    /* == Environmental Rendering (fast optical-flow-like version) == */
     {
         const video = document.getElementById('source_sky');
         const canvas = document.getElementById('sky');
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const ctx = canvas.getContext('2d');
 
         // ===== 参数 =====
         const VIDEO_RATE = 0.1;
-        const OUTPUT_FPS = 60;
+        const OUTPUT_FPS = 30;
 
-        const EST_W = 160;
-        const EST_H = 90;
-        const SEARCH_RADIUS = 8;
-        const SEARCH_STEP = 2;
+        // 用很小的图做流场估计（几千像素级）
+        const EST_W = 96;
+        const EST_H = 54;
+
+        // 用中低分辨率做插帧，然后再放大到全屏
+        const INTERP_W = 320;
+        const INTERP_H = 180;
+
+        // 稀疏流场网格
+        const FLOW_COLS = 12;
+        const FLOW_ROWS = 7;
+
+        // block matching 参数
+        const SEARCH_RADIUS = 4;
+        const PATCH_RADIUS = 2;
+
         // =================
 
         const smallCanvas = document.createElement('canvas');
         const smallCtx = smallCanvas.getContext('2d', { willReadFrequently: true });
 
-        let frameA = null;        // 上一个真实帧
-        let frameB = null;        // 当前真实帧
-        let smallA = null;
-        let smallB = null;
+        const interpCanvas = document.createElement('canvas');
+        const interpCtx = interpCanvas.getContext('2d');
 
-        let flowDx = 0;
-        let flowDy = 0;
+        const outCanvas = document.createElement('canvas');
+        const outCtx = outCanvas.getContext('2d', { willReadFrequently: true });
 
-        let segStartPerf = 0;     // 当前 A->B 段开始时间（performance.now）
-        let segDurationMs = 100;  // 当前段持续时间
+        let frameA = null;   // INTERP_W x INTERP_H 的 RGBA
+        let frameB = null;
+        let lumA = null;     // EST_W x EST_H 的亮度
+        let lumB = null;
+
+        let flowField = null;       // 当前段目标流场
+        let smoothFlowField = null; // 平滑后的流场
+
+        let segStartPerf = 0;
+        let segDurationMs = 100;
         let lastMediaTime = -1;
 
         let ready = false;
         let lastRenderNow = 0;
 
+        let skyEl = null;
+        let blockerEl = null;
+        let buildingEl = null;
+
         function resize2() {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
+
             smallCanvas.width = EST_W;
             smallCanvas.height = EST_H;
+
+            interpCanvas.width = INTERP_W;
+            interpCanvas.height = INTERP_H;
+
+            outCanvas.width = INTERP_W;
+            outCanvas.height = INTERP_H;
+
+            ctx.imageSmoothingEnabled = true;
+            interpCtx.imageSmoothingEnabled = true;
+            outCtx.imageSmoothingEnabled = true;
+            smallCtx.imageSmoothingEnabled = true;
         }
 
         resize2();
         window.addEventListener('resize', resize2);
 
-        let pitch_old = pitch
-        let _pitch = 0;
+        skyEl = document.querySelector('#sky');
+        blockerEl = document.querySelector('#blocker');
+        window.groundEl = document.querySelector('#ground');
+        buildingEl = document.querySelector('#building');
+
+        let pitch_old = window.pitch;
+        let zoom_old = window.zoom;
+        let _pitch = window.pitch ?? 0;
+        let _zoom = window.zoom ?? 0;
+
         Object.defineProperty(window, "pitch", {
             get() {
-                return _pitch
+                return _pitch;
             },
             set(v) {
-                _pitch = v
-                // 参数变化时执行
-                if (v != pitch_old) {
-                    adjust_clarity(v)
+                _pitch = v;
+                if (v !== pitch_old) {
+                    adjust_clarity(v);
                     adjust_horizon(v);
-                    pitch_old = v
+                    pitch_old = v;
                 }
-
             }
         });
-        function adjust_horizon(pitch) {
-            // console.log(`adjust_horizon`);
-            setTimeout(() => {
-                const sky = document.querySelector('#sky');
-                const ground = document.querySelector('#ground');
-                if (pitch >= -0.38) {
-                    let horizon
-                    if (pitch <= 0) {
-                        horizon = (pitch + 0.38) / (0 + 0.38) * 0.4
-                        sky.style.display = `initial`
-                        ground.style.display = `none`
-                    } else {
-                        // horizon = (pitch - 0) / (0.06 - 0) * (0.75 - 0.4) + 0.4
-                        horizon = Math.pow(pitch / 0.06, 2) * 0.35 + 0.4
-                        let opacity
-                        opacity = Math.max(0, Math.min(1, pitch / 0.06))
-                        ground.style.opacity = opacity
-                        ground.style.display = `initial`
-                    }
-                    sky.style.height = `${horizon * 100}%`;
-                } else {
-                    sky.style.display = `none`
-                    ground.style.display = `none`
-                }
-            }, 15)
-        }
-        function adjust_clarity(pitch) {
-            setTimeout(() => {
-                const building = document.querySelector(`#building`)
-                let blur;
-                const MAX_BLUR = 0.5;
-                const MIN_BLUR = 1;
-                if (pitch >= -0.38) {
 
-                    if (pitch <= 0) {
-                        blur = MAX_BLUR - (pitch + 0.38) / 0.38 * MAX_BLUR;
-                    } else {
-                        blur = (pitch / 0.06) * (MIN_BLUR * 0.5);
-                    }
-
-                    blur = Math.max(0, Math.min(MAX_BLUR, blur));
-
-                } else {
-                    blur = MAX_BLUR;
-                }
-                building.style.filter = `blur(${blur}px)`;
-            }, 0)
-        }
-
-
-        function captureFullFrame() {
-            const temp = document.createElement('canvas');
-            temp.width = canvas.width;
-            temp.height = canvas.height;
-            const tctx = temp.getContext('2d', { willReadFrequently: true });
-            tctx.drawImage(video, 0, 0, temp.width, temp.height);
-            const img = tctx.getImageData(0, 0, temp.width, temp.height);
-            return new Uint8ClampedArray(img.data);
-        }
-
-        function captureSmallFrame() {
-            smallCtx.clearRect(0, 0, EST_W, EST_H);
-            smallCtx.drawImage(video, 0, 0, EST_W, EST_H);
-            const img = smallCtx.getImageData(0, 0, EST_W, EST_H);
-            return new Uint8ClampedArray(img.data);
-        }
-
-        function estimateShift(a, b, w, h) {
-            let bestDx = 0;
-            let bestDy = 0;
-            let bestScore = Infinity;
-
-            for (let oy = -SEARCH_RADIUS; oy <= SEARCH_RADIUS; oy++) {
-                for (let ox = -SEARCH_RADIUS; ox <= SEARCH_RADIUS; ox++) {
-                    let score = 0;
-                    let count = 0;
-
-                    for (let y = SEARCH_RADIUS; y < h - SEARCH_RADIUS; y += SEARCH_STEP) {
-                        for (let x = SEARCH_RADIUS; x < w - SEARCH_RADIUS; x += SEARCH_STEP) {
-                            const x2 = x + ox;
-                            const y2 = y + oy;
-                            if (x2 < 0 || x2 >= w || y2 < 0 || y2 >= h) continue;
-
-                            const i1 = (y * w + x) * 4;
-                            const i2 = (y2 * w + x2) * 4;
-
-                            const l1 = a[i1] * 0.299 + a[i1 + 1] * 0.587 + a[i1 + 2] * 0.114;
-                            const l2 = b[i2] * 0.299 + b[i2 + 1] * 0.587 + b[i2 + 2] * 0.114;
-
-                            score += Math.abs(l1 - l2);
-                            count++;
-                        }
-                    }
-
-                    score /= Math.max(1, count);
-
-                    if (score < bestScore) {
-                        bestScore = score;
-                        bestDx = ox;
-                        bestDy = oy;
-                    }
+        Object.defineProperty(window, "zoom", {
+            get() {
+                return _zoom;
+            },
+            set(v) {
+                _zoom = v;
+                if (v !== zoom_old) {
+                    adjust_opacity(v);
+                    zoom_old = v;
                 }
             }
+        });
 
-            return { dx: bestDx, dy: bestDy };
+        function adjust_clarity(pitch) {
+            const MAX_BLUR = 0.2;
+            const MIN_BLUR = 0.5;
+            let blur;
+
+            if (pitch >= -0.38) {
+                if (pitch <= 0) {
+                    blur = MAX_BLUR - (pitch + 0.38) / 0.38 * MAX_BLUR;
+                } else {
+                    blur = (pitch / 0.06) * (MIN_BLUR * 0.5);
+                }
+                blur = Math.max(0, Math.min(MAX_BLUR, blur));
+            } else {
+                blur = MAX_BLUR;
+            }
+
+            buildingEl.style.filter = `blur(${blur}px)`;
         }
 
-        function sampleBilinear(frame, w, h, x, y, c) {
-            x = Math.max(0, Math.min(w - 1, x));
-            y = Math.max(0, Math.min(h - 1, y));
 
-            const x0 = Math.floor(x);
-            const y0 = Math.floor(y);
+        function adjust_horizon(pitch) {
+            const PITCH_MIN1 = -1.15;
+            const PITCH_MIN2 = -0.38;
+            const PITCH_MAX = 0.06;
+
+            if (pitch == PITCH_MIN1) {
+                // groundEl.style.transform = `rotateX(${24.1}deg) scale(${1.8})`;
+                groundEl.style.setProperty('--rx', `${24.1}deg`);
+                groundEl.style.setProperty('--s', `${1.8}`);
+                return;
+            }
+
+            // ===== pitch 太低时隐藏 sky =====
+            if (pitch < PITCH_MIN2) {
+                skyEl.style.display = 'none';
+                blockerEl.style.display = 'none';
+                groundEl.style.top = `${-100}%`;
+                // return;
+            } else {
+                skyEl.style.display = 'initial';
+                blockerEl.style.display = 'initial';
+                // ===== horizon =====
+                let horizon;
+                if (pitch <= 0) {
+                    horizon = (pitch + 0.38) / 0.38 * 0.47;
+                } else {
+                    horizon = Math.pow(pitch / 0.06, 2) * 0.35 + 0.47;
+                }
+                skyEl.style.height = `${horizon * 100}%`;
+                blockerEl.style.height = `${horizon * 100}%`;
+                groundEl.style.top = `${horizon * 100 - 100}%`;
+            }
+
+
+            // ===== ground transform 随 pitch 变化 =====
+            const t = Math.max(0, Math.min(1, (pitch - PITCH_MIN1) / (PITCH_MAX - PITCH_MIN1)));
+
+            const rotateX = 24.1 + t * 45;
+            const scale = 3 + t * .5;
+            // const scale = 1;
+
+            // groundEl.style.transformOrigin = 'bottom center';
+            // groundEl.style.transform = `rotateX(${rotateX}deg) scale(${scale})`;
+            groundEl.style.setProperty('--rx', `${rotateX}deg`);
+            groundEl.style.setProperty('--s', `${scale}`);
+        }
+
+        function adjust_opacity(zoom) {
+            const ZOOM_FADE_START = 150;
+            const ZOOM_FADE_END = 50; // 你可以改这个值，决定多久从 0 渐变到 1
+
+            // ===== ground opacity 随 zoom 变化 =====
+            let groundOpacity;
+
+            if (zoom >= ZOOM_FADE_START) {
+                groundOpacity = 0;
+            } else if (zoom <= ZOOM_FADE_END) {
+                groundOpacity = 1;
+            } else {
+                groundOpacity =
+                    (ZOOM_FADE_START - zoom) / (ZOOM_FADE_START - ZOOM_FADE_END);
+            }
+
+            groundEl.style.opacity = groundOpacity;
+        }
+
+        function captureInterpFrame() {
+            interpCtx.clearRect(0, 0, INTERP_W, INTERP_H);
+            interpCtx.drawImage(video, 0, 0, INTERP_W, INTERP_H);
+            return new Uint8ClampedArray(
+                interpCtx.getImageData(0, 0, INTERP_W, INTERP_H).data
+            );
+        }
+
+        function captureLumaSmall() {
+            smallCtx.clearRect(0, 0, EST_W, EST_H);
+            smallCtx.drawImage(video, 0, 0, EST_W, EST_H);
+            const rgba = smallCtx.getImageData(0, 0, EST_W, EST_H).data;
+
+            const lum = new Float32Array(EST_W * EST_H);
+            for (let i = 0, j = 0; i < lum.length; i++, j += 4) {
+                lum[i] = rgba[j] * 0.299 + rgba[j + 1] * 0.587 + rgba[j + 2] * 0.114;
+            }
+            return lum;
+        }
+
+        function clamp(v, min, max) {
+            return v < min ? min : v > max ? max : v;
+        }
+
+        function sampleBilinearRGBA(frame, w, h, x, y, c) {
+            x = clamp(x, 0, w - 1);
+            y = clamp(y, 0, h - 1);
+
+            const x0 = x | 0;
+            const y0 = y | 0;
             const x1 = Math.min(w - 1, x0 + 1);
             const y1 = Math.min(h - 1, y0 + 1);
 
@@ -1582,37 +1761,152 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             const v01 = frame[i01];
             const v11 = frame[i11];
 
-            const v0 = v00 * (1 - fx) + v10 * fx;
-            const v1 = v01 * (1 - fx) + v11 * fx;
+            const v0 = v00 + (v10 - v00) * fx;
+            const v1 = v01 + (v11 - v01) * fx;
+            return v0 + (v1 - v0) * fy;
+        }
 
-            return v0 * (1 - fy) + v1 * fy;
+        function estimatePatchShift(a, b, w, h, cx, cy) {
+            let bestDx = 0;
+            let bestDy = 0;
+            let bestScore = Infinity;
+
+            for (let oy = -SEARCH_RADIUS; oy <= SEARCH_RADIUS; oy++) {
+                for (let ox = -SEARCH_RADIUS; ox <= SEARCH_RADIUS; ox++) {
+                    let score = 0;
+                    let count = 0;
+
+                    for (let py = -PATCH_RADIUS; py <= PATCH_RADIUS; py++) {
+                        for (let px = -PATCH_RADIUS; px <= PATCH_RADIUS; px++) {
+                            const x1 = cx + px;
+                            const y1 = cy + py;
+                            const x2 = x1 + ox;
+                            const y2 = y1 + oy;
+
+                            if (
+                                x1 < 0 || x1 >= w || y1 < 0 || y1 >= h ||
+                                x2 < 0 || x2 >= w || y2 < 0 || y2 >= h
+                            ) continue;
+
+                            const l1 = a[y1 * w + x1];
+                            const l2 = b[y2 * w + x2];
+                            score += Math.abs(l1 - l2);
+                            count++;
+                        }
+                    }
+
+                    if (count > 0) {
+                        score /= count;
+                        if (score < bestScore) {
+                            bestScore = score;
+                            bestDx = ox;
+                            bestDy = oy;
+                        }
+                    }
+                }
+            }
+
+            return { dx: bestDx, dy: bestDy };
+        }
+
+        function estimateFlowField(a, b) {
+            const field = new Float32Array(FLOW_COLS * FLOW_ROWS * 2);
+
+            for (let gy = 0; gy < FLOW_ROWS; gy++) {
+                for (let gx = 0; gx < FLOW_COLS; gx++) {
+                    const cx = Math.round((gx / (FLOW_COLS - 1)) * (EST_W - 1));
+                    const cy = Math.round((gy / (FLOW_ROWS - 1)) * (EST_H - 1));
+
+                    const shift = estimatePatchShift(a, b, EST_W, EST_H, cx, cy);
+
+                    const idx = (gy * FLOW_COLS + gx) * 2;
+                    field[idx] = shift.dx * (INTERP_W / EST_W);
+                    field[idx + 1] = shift.dy * (INTERP_H / EST_H);
+                }
+            }
+
+            // 简单平滑一下流场，减少抖动
+            const smoothed = new Float32Array(field.length);
+            for (let gy = 0; gy < FLOW_ROWS; gy++) {
+                for (let gx = 0; gx < FLOW_COLS; gx++) {
+                    let sumX = 0;
+                    let sumY = 0;
+                    let count = 0;
+
+                    for (let oy = -1; oy <= 1; oy++) {
+                        for (let ox = -1; ox <= 1; ox++) {
+                            const nx = gx + ox;
+                            const ny = gy + oy;
+                            if (nx < 0 || nx >= FLOW_COLS || ny < 0 || ny >= FLOW_ROWS) continue;
+
+                            const nidx = (ny * FLOW_COLS + nx) * 2;
+                            sumX += field[nidx];
+                            sumY += field[nidx + 1];
+                            count++;
+                        }
+                    }
+
+                    const idx = (gy * FLOW_COLS + gx) * 2;
+                    smoothed[idx] = sumX / count;
+                    smoothed[idx + 1] = sumY / count;
+                }
+            }
+
+            return smoothed;
+        }
+
+        function sampleFlow(field, x, y) {
+            const fx = (x / (INTERP_W - 1)) * (FLOW_COLS - 1);
+            const fy = (y / (INTERP_H - 1)) * (FLOW_ROWS - 1);
+
+            const x0 = Math.floor(fx);
+            const y0 = Math.floor(fy);
+            const x1 = Math.min(FLOW_COLS - 1, x0 + 1);
+            const y1 = Math.min(FLOW_ROWS - 1, y0 + 1);
+
+            const tx = fx - x0;
+            const ty = fy - y0;
+
+            const i00 = (y0 * FLOW_COLS + x0) * 2;
+            const i10 = (y0 * FLOW_COLS + x1) * 2;
+            const i01 = (y1 * FLOW_COLS + x0) * 2;
+            const i11 = (y1 * FLOW_COLS + x1) * 2;
+
+            const dx0 = field[i00] + (field[i10] - field[i00]) * tx;
+            const dx1 = field[i01] + (field[i11] - field[i01]) * tx;
+            const dy0 = field[i00 + 1] + (field[i10 + 1] - field[i00 + 1]) * tx;
+            const dy1 = field[i01 + 1] + (field[i11 + 1] - field[i01 + 1]) * tx;
+
+            return {
+                dx: dx0 + (dx1 - dx0) * ty,
+                dy: dy0 + (dy1 - dy0) * ty
+            };
         }
 
         function buildInterpolatedFrame(now) {
-            if (!ready || !frameA || !frameB) return null;
+            if (!ready || !frameA || !frameB || !smoothFlowField) return null;
 
-            const w = canvas.width;
-            const h = canvas.height;
-            const out = new Uint8ClampedArray(w * h * 4);
+            const out = new Uint8ClampedArray(INTERP_W * INTERP_H * 4);
 
             let t = (now - segStartPerf) / Math.max(1, segDurationMs);
-            t = Math.max(0, Math.min(1, t));
+            t = clamp(t, 0, 1);
 
-            // A 往 B 方向走
-            const ax = flowDx * t;
-            const ay = flowDy * t;
+            // smoothstep，过渡更柔和
+            t = t * t * (3 - 2 * t);
 
-            // B 反向补回来
-            const bx = flowDx * (t - 1);
-            const by = flowDy * (t - 1);
+            for (let y = 0; y < INTERP_H; y++) {
+                for (let x = 0; x < INTERP_W; x++) {
+                    const dst = (y * INTERP_W + x) * 4;
+                    const f = sampleFlow(smoothFlowField, x, y);
 
-            for (let y = 0; y < h; y++) {
-                for (let x = 0; x < w; x++) {
-                    const dst = (y * w + x) * 4;
+                    const ax = f.dx * t;
+                    const ay = f.dy * t;
+                    const bx = f.dx * (t - 1);
+                    const by = f.dy * (t - 1);
 
                     for (let c = 0; c < 3; c++) {
-                        const va = sampleBilinear(frameA, w, h, x - ax, y - ay, c);
-                        const vb = sampleBilinear(frameB, w, h, x - bx, y - by, c);
+                        const va = sampleBilinearRGBA(frameA, INTERP_W, INTERP_H, x - ax, y - ay, c);
+                        const vb = sampleBilinearRGBA(frameB, INTERP_W, INTERP_H, x - bx, y - by, c);
                         const v = va * (1 - t) + vb * t;
                         out[dst + c] = v < 0 ? 0 : v > 255 ? 255 : v;
                     }
@@ -1626,29 +1920,33 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
         function drawFrame(frame) {
             if (!frame) return;
-            ctx.putImageData(new ImageData(frame, canvas.width, canvas.height), 0, 0);
+
+            outCtx.putImageData(new ImageData(frame, INTERP_W, INTERP_H), 0, 0);
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(outCanvas, 0, 0, canvas.width, canvas.height);
         }
 
         function resetWithCurrentFrame() {
-            const full = captureFullFrame();
-            const small = captureSmallFrame();
+            const full = captureInterpFrame();
+            const small = captureLumaSmall();
 
             frameA = new Uint8ClampedArray(full);
             frameB = new Uint8ClampedArray(full);
-            smallA = new Uint8ClampedArray(small);
-            smallB = new Uint8ClampedArray(small);
+            lumA = new Float32Array(small);
+            lumB = new Float32Array(small);
 
-            flowDx = 0;
-            flowDy = 0;
+            flowField = new Float32Array(FLOW_COLS * FLOW_ROWS * 2);
+            smoothFlowField = new Float32Array(FLOW_COLS * FLOW_ROWS * 2);
+
             segStartPerf = performance.now();
             segDurationMs = 100;
             ready = true;
         }
 
         function onVideoFrame(now, metadata) {
-            const mediaTime = metadata.mediaTime; // 秒
+            const mediaTime = metadata.mediaTime;
 
-            // 检测 loop：如果 mediaTime 突然变小，说明从结尾跳回开头了
             if (lastMediaTime >= 0 && mediaTime < lastMediaTime) {
                 resetWithCurrentFrame();
                 lastMediaTime = mediaTime;
@@ -1656,34 +1954,41 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 return;
             }
 
-            const full = captureFullFrame();
-            const small = captureSmallFrame();
+            const full = captureInterpFrame();
+            const small = captureLumaSmall();
 
             if (!ready) {
                 frameA = new Uint8ClampedArray(full);
                 frameB = new Uint8ClampedArray(full);
-                smallA = new Uint8ClampedArray(small);
-                smallB = new Uint8ClampedArray(small);
+                lumA = new Float32Array(small);
+                lumB = new Float32Array(small);
+
+                flowField = new Float32Array(FLOW_COLS * FLOW_ROWS * 2);
+                smoothFlowField = new Float32Array(FLOW_COLS * FLOW_ROWS * 2);
 
                 segStartPerf = performance.now();
                 segDurationMs = 100;
-                flowDx = 0;
-                flowDy = 0;
                 ready = true;
             } else {
                 const dtSec = lastMediaTime >= 0 ? (mediaTime - lastMediaTime) : 0.1;
                 segDurationMs = Math.max(1, dtSec * 1000 / VIDEO_RATE);
 
                 frameA = frameB;
-                smallA = smallB;
+                lumA = lumB;
 
                 frameB = new Uint8ClampedArray(full);
-                smallB = new Uint8ClampedArray(small);
+                lumB = new Float32Array(small);
 
-                const shift = estimateShift(smallA, smallB, EST_W, EST_H);
+                flowField = estimateFlowField(lumA, lumB);
 
-                flowDx = shift.dx * (canvas.width / EST_W);
-                flowDy = shift.dy * (canvas.height / EST_H);
+                // 时间上也平滑一点，避免相邻段突变
+                if (!smoothFlowField || smoothFlowField.length !== flowField.length) {
+                    smoothFlowField = new Float32Array(flowField);
+                } else {
+                    for (let i = 0; i < flowField.length; i++) {
+                        smoothFlowField[i] = smoothFlowField[i] * 0.4 + flowField[i] * 0.6;
+                    }
+                }
 
                 segStartPerf = performance.now();
             }
@@ -1780,35 +2085,95 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         device.queue.submit([encoder.finish()])
     }
 
+
+    /* == FPS statistics == */
+    let fps = 0
+    let frameCount = 0
+    let fpsTime = performance.now()
+    let FPS = (now) => {
+        frameCount++
+        if (now - fpsTime > 1000) {
+            fps = frameCount
+            frameCount = 0
+            fpsTime = now
+        }
+        const vertexMB = (GPUResources.data.rendering.vertexByteOffset / 1048576).toFixed(1)
+        const indexMB = (GPUResources.data.rendering.indexByteOffset / 1048576).toFixed(1)
+        log.textContent =
+            `FPS: ${fps}
+Delta: ${(deltaTime * 1000).toFixed(2)} ms
+Buildings: ${GPUResources.data.rendering.indexByteOffset / 12}
+Received: ${stats.received}
+Pending: ${GPUResources.data.pending.length}
+Processed: ${stats.processed}
+VertexMB: ${vertexMB} MB
+IndexMB: ${indexMB} MB`
+    }
+
+
     // === Render ===
-    let frame, lastTime, deltaTime, PAUSE_RENDER = false
+    let frame, lastTime, deltaTime, PAUSE_RENDER = false, STARTED = false
     lastTime = performance.now()
     frame = async (now) => {
         deltaTime = (now - lastTime) / 1000
         lastTime = now
-        data_deploy(device)
-        camera(mat4, GPUResources, device, matrix);
-        await interaction(deltaTime)
-        render(deltaTime)
+        if (!PAUSE_RENDER) {
+            data_deploy(device)
+            camera(mat4, GPUResources, device, matrix)
+            await interaction(deltaTime)
+            render(deltaTime)
+            FPS(now)
+        }
         requestAnimationFrame(frame)
     }
-    frame()
+    // frame()
 
 
     // Page
-    document.addEventListener("click", () => {
+    const btn = document.querySelector('#startBtn');
+    const bar = document.querySelector('#progress');
+    console.log(btn, bar);
+    btn.addEventListener("click", () => {
+        const start = performance.now();
+        const duration = 1000;
+
+        const progressbar = (now) => {
+
+            const t = (now - start) / duration;
+            const progress = Math.min(t, 1);
+
+            bar.style.width = (progress * 100) + "%";
+
+            if (progress < 1) {
+                requestAnimationFrame(progressbar);
+            }
+        }
+
+        requestAnimationFrame(progressbar);
+
+        // 真正开始流和渲染
         ws.send(JSON.stringify({
             type: "start",
             bbox: bbox,
             layer: "gis_osm_buildings_a_free_1",
             res: 7
         }))
-        console.log(`bbox:`, bbox)
+        console.log("bbox:", bbox)
+
         PAUSE_RENDER = false
+
+        // 只在第一次点击时启动 RAF 循环
+        if (!STARTED) {
+            STARTED = true
+            lastTime = performance.now()
+            requestAnimationFrame(frame)
+        }
     })
 
     document.getElementById("stopBtn").onclick = () => {
         ws.send(JSON.stringify({ type: "stop" }))
         PAUSE_RENDER = true
     }
+
+
 })
