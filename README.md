@@ -1,6 +1,6 @@
 # WebGPU-Based 3D GIS Real Estate Dashboard
 
-![Demo Placeholder](./img/demo.webp)
+![Demo Placeholder](./img/demo.gif)
 
 *Demo showing basic operations (zoom, pan, hover interaction, and dashboard updates) will be here.*
 
