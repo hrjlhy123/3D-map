@@ -1,8 +1,8 @@
 # WebGPU-Based 3D GIS Real Estate Dashboard
 
-![Demo Placeholder](./img/demo.gif)
+![Demo GIF Placeholder](./img/demo.gif)
 
-*Demo showing basic operations (zoom, pan, hover interaction, and dashboard updates) will be here.*
+*Demo GIF showing basic operations (zoom, pan, hover interaction, and dashboard updates) will be here.*
 
 A browser-based Geographic Information System (GIS) and dashboard prototype that combines large-scale building visualization, real-time streaming, WebGPU rendering, and synchronized analytical charts in a single interface.
 
