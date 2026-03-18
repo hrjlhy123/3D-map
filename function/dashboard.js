@@ -50,15 +50,20 @@ const lineChart = new Chart(lineCtx, {
     responsive: true,
     maintainAspectRatio: false,
     animation: {
-      duration: 700
+      duration: 0
+    },
+    elements: {
+      point: {
+        radius: 3.5,
+        hoverRadius: 4.5,
+        hitRadius: 6,
+        borderWidth: 0,
+        backgroundColor: '#5aa9e6',
+        borderColor: '#5aa9e6'
+      }
     },
     layout: {
-      padding: {
-        top: 8,
-        right: 8,
-        bottom: 4,
-        left: 6
-      }
+      padding: 0
     },
     plugins: {
       legend: { display: false },
@@ -83,6 +88,7 @@ const lineChart = new Chart(lineCtx, {
         }
       },
       y: {
+        max: 10,
         beginAtZero: true,
         grid: {
           color: commonGridColor,
@@ -121,15 +127,10 @@ const barChart = new Chart(barCtx, {
     responsive: true,
     maintainAspectRatio: false,
     animation: {
-      duration: 700
+      duration: 0
     },
     layout: {
-      padding: {
-        top: 8,
-        right: 10,
-        bottom: 2,
-        left: 6
-      }
+      padding: 0
     },
     plugins: {
       legend: { display: false },
@@ -200,15 +201,10 @@ const donutChart = new Chart(donutCtx, {
     cutout: '68%',
     radius: '84%',
     animation: {
-      duration: 700
+      duration: 0
     },
     layout: {
-      padding: {
-        top: 8,
-        right: 4,
-        bottom: 4,
-        left: 4
-      }
+      padding: 0
     },
     plugins: {
       title: {
@@ -235,6 +231,131 @@ const donutChart = new Chart(donutCtx, {
   }
 });
 
+// Chart thumbnail
+
+let dashboardThumbMode = false;
+
+function applyChartThumbMode(chart, mode, kind) {
+  const isThumb = !!mode;
+  const o = chart.options;
+
+  // 通用
+  if (o.plugins?.title) o.plugins.title.display = !isThumb;
+  if (o.plugins?.tooltip) o.plugins.tooltip.enabled = !isThumb;
+
+  if (kind === 'line') {
+    if (o.scales?.x) {
+      o.scales.x.display = !isThumb ? true : false;
+    }
+    if (o.scales?.y) {
+      o.scales.y.display = !isThumb ? true : false;
+    }
+
+    o.scales.x.offset = isThumb ? true : false;
+
+    const ds = chart.data.datasets[0];
+    ds.pointRadius = isThumb ? 0 : 3.5;
+    ds.pointHoverRadius = isThumb ? 0 : 4.5;
+    ds.borderWidth = isThumb ? 2 : 2.5;
+    ds.pointBorderWidth = 0;
+    ds.pointHoverBorderWidth = 0;
+
+    ds.tension = isThumb ? 0.25 : 0.35;
+  }
+
+  if (kind === 'bar') {
+    if (o.scales?.x) {
+      o.scales.x.display = !isThumb ? true : false;
+    }
+    if (o.scales?.y) {
+      o.scales.y.display = !isThumb ? true : false;
+    }
+
+    const ds = chart.data.datasets[0];
+    ds.barThickness = isThumb ? 6 : 14;
+    ds.maxBarThickness = isThumb ? 6 : 14;
+    ds.borderRadius = 999;
+  }
+
+  if (kind === 'donut') {
+    if (o.plugins?.legend) o.plugins.legend.display = !isThumb;
+
+    o.cutout = isThumb ? '72%' : '68%';
+    o.radius = isThumb ? '92%' : '84%';
+  }
+
+  chart.update();
+}
+
+function setDashboardThumbMode(mode) {
+  dashboardThumbMode = !!mode;
+
+  document.body.classList.toggle('dashboard-thumb-mode', dashboardThumbMode);
+
+  applyChartThumbMode(lineChart, dashboardThumbMode, 'line');
+  applyChartThumbMode(barChart, dashboardThumbMode, 'bar');
+  applyChartThumbMode(donutChart, dashboardThumbMode, 'donut');
+}
+
+function toggleDashboardThumbMode() {
+  setDashboardThumbMode(!dashboardThumbMode);
+}
+
+const charts = document.querySelectorAll('.chart_box');
+const panelLeftBottom = document.querySelector('.panel_left_bottom');
+const panelRightTop = document.querySelector('.panel_right_top');
+const kpi_card = document.querySelectorAll('.kpi_card');
+const window_chat = document.querySelector(`#chat`);
+const log = document.querySelector(`#log2`);
+
+let movedToLeftBottom = false;
+
+document.getElementById('chatBtn').addEventListener('click', () => {
+
+  toggleDashboardThumbMode();
+  toggleOrbitMode();
+  let data
+  if (movedToLeftBottom) {
+    // Layout 1
+    panelLeftBottom.classList.remove('layout_2');
+    movedToLeftBottom = false;
+    requestAnimationFrame(() => {
+      for (let el of kpi_card) {
+        el.classList.remove('ban_animate');
+      }
+    })
+    for (let el of charts) {
+      panelRightTop.appendChild(el);
+      el.classList.remove('ban_animate');
+    }
+    data = buildDashboardDataFromZoom(zoom);
+    window_chat.classList.remove('open');
+    log.classList.remove(`layout_2`)
+  } else {
+    // Layout 2
+    panelLeftBottom.classList.add('layout_2');
+    movedToLeftBottom = true;
+    for (let el of kpi_card) {
+      el.classList.add('ban_animate');
+      console.log(el.className);
+    }
+    for (let el of charts) {
+      panelLeftBottom.appendChild(el);
+      el.classList.add('ban_animate');
+    }
+    window_chat.classList.add('open');
+    log.classList.add(`layout_2`)
+  }
+  updateKpiBackLabels(data ?? '');
+
+  // 让 chart.js 重新计算尺寸
+  requestAnimationFrame(() => {
+    lineChart.resize();
+    barChart.resize();
+    donutChart.resize();
+  });
+});
+
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
@@ -249,7 +370,6 @@ function hash01(seed) {
   return x - Math.floor(x);
 }
 
-// 你自己按项目实际改这两个值
 const DASHBOARD_ZOOM_RANGE = {
   min: 20,
   max: 400
@@ -593,7 +713,7 @@ class RollingKPI {
 
       const dist = s.target - s.pos;
 
-      if (Math.abs(dist) < 0.002 && Math.abs(s.speed) < 0.01) {
+      if (Math.abs(dist) < 0.02) {
         s.pos = s.target;
         s.speed = 0;
         this.applyDigitPosition(s);
@@ -655,7 +775,6 @@ function initDashboardZero() {
     el.textContent = "";
   });
 
-
   // line
   lineChart.data.datasets[0].data = [0, 0, 0, 0, 0, 0];
   lineChart.update();
@@ -673,6 +792,22 @@ initDashboardZero();
 
 function formatUSD(value) {
   return "USD " + Math.round(value).toLocaleString("en-US");
+}
+
+function updateKpiBackLabels(data) {
+  const isLayout2 = document.querySelector('.panel_left_bottom')?.classList.contains('layout_2');
+
+  if (isLayout2) {
+    document.getElementById("kpi1Real").textContent = "TPV";
+    document.getElementById("kpi2Real").textContent = "Avg Price";
+    document.getElementById("kpi3Real").textContent = "Rental Rev.";
+    document.getElementById("kpi4Real").textContent = "Maint. Cost";
+  } else {
+    document.getElementById("kpi1Real").textContent = formatUSD(data.kpi.totalPropertyValue);
+    document.getElementById("kpi2Real").textContent = formatUSD(data.kpi.averagePropertyPrice);
+    document.getElementById("kpi3Real").textContent = formatUSD(data.kpi.totalRentalRevenue);
+    document.getElementById("kpi4Real").textContent = formatUSD(data.kpi.maintenanceCost);
+  }
 }
 
 let lastZoom = null;
@@ -694,10 +829,7 @@ window.updateDashboardFromZoom = (zoom, force = false) => {
   setKPI(cards[2], unitEls[2], data.kpi.totalRentalRevenue);
   setKPI(cards[3], unitEls[3], data.kpi.maintenanceCost);
 
-  document.getElementById("kpi1Real").textContent = formatUSD(data.kpi.totalPropertyValue);
-  document.getElementById("kpi2Real").textContent = formatUSD(data.kpi.averagePropertyPrice);
-  document.getElementById("kpi3Real").textContent = formatUSD(data.kpi.totalRentalRevenue);
-  document.getElementById("kpi4Real").textContent = formatUSD(data.kpi.maintenanceCost);
+  updateKpiBackLabels(data);
 
   lineChart.data.datasets[0].data = data.lineData;
   lineChart.update();

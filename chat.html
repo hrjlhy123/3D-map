@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Embedded Chat Panel</title>
+    <style>
+    :root {
+      --bg-1: #dbe7f2;
+      --bg-2: #c7d8e8;
+      --panel: rgba(255, 255, 255, 0.24);
+      --panel-strong: rgba(255, 255, 255, 0.34);
+      --border: rgba(255, 255, 255, 0.2);
+      --text: #2f5f88;
+      --text-soft: rgba(47, 95, 136, 0.72);
+      --line: rgba(90, 169, 230, 0.2);
+      --accent: #2f5f88;
+      --accent-2: #7dbcf0;
+      --shadow: 0 14px 34px rgba(78, 117, 150, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: Arial, sans-serif;
+      color: var(--text);
+      /* background:
+        radial-gradient(circle at 50% 52%, rgba(255,255,255,0.3), transparent 35%),
+        linear-gradient(180deg, var(--bg-1), var(--bg-2)); */
+      overflow: hidden;
+    }
+
+    body {
+      padding: 18px;
+    }
+
+    .bubble {
+      max-width: min(76%, 560px);
+      padding: 14px 16px 24px;
+      border-radius: 1rem;
+      position: relative;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(255,255,255,0.16);
+      line-height: 1.45;
+      font-size: 16px;
+    }
+
+    .incoming .bubble {
+      background: var(--panel);
+      color: var(--text);
+      border-top-left-radius: 10px;
+    }
+
+    .outgoing .bubble {
+      background: linear-gradient(180deg, rgba(125,188,240,0.28), rgba(90,169,230,0.24));
+      color: var(--text);
+      border-top-right-radius: 10px;
+    }
+
+    .bubble .time {
+      position: absolute;
+      right: 12px;
+      bottom: 8px;
+      font-size: 11px;
+      color: var(--text-soft);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .double-check {
+      color: var(--accent);
+      font-weight: 700;
+      letter-spacing: -1px;
+    }
+
+    .composer {
+      padding: 14px 16px 28px;
+      /* border-top: 1px solid var(--line);
+      background: rgba(255,255,255,0.12); */
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .composer-shell {
+      height: 58px;
+      width: 65%;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.22);
+      border: 1px solid rgba(255,255,255,0.18);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px 0 16px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+      /* animation: morphA 7s ease-in-out infinite; */
+    }
+
+    .composer-input {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      outline: none;
+      background: transparent;
+      color: var(--text);
+      font-size: 15px;
+      font-family: inherit;
+    }
+
+    .composer-input::placeholder {
+      color: rgba(47, 95, 136, 0.55);
+    }
+
+    .send {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: 0;
+      background: linear-gradient(180deg, var(--accent-2), var(--accent));
+      color: white;
+      font-size: 16px;
+      box-shadow: 0 8px 18px rgba(90, 169, 230, 0.26);
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+
+    .messages::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    .messages::-webkit-scrollbar-thumb {
+      background: rgba(90, 169, 230, 0.28);
+      border-radius: 999px;
+    }
+
+    .messages::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    @media (max-width: 700px) {
+      body { padding: 10px; }
+      .chat-shell { border-radius: 1rem; }
+      .bubble { max-width: 88%; font-size: 15px; }
+      .name { font-size: 16px; }
+    }
+.blob-wrap {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+.blob {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+
+  border-radius: 34% 38% 32% 36% / 30% 34% 38% 35%;
+  animation: morphA 9s ease-in-out infinite;
+}
+
+.blob-shape {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+
+  background: linear-gradient(
+    180deg,
+    rgba(159, 208, 245, 0.22),
+    rgba(90, 169, 230, 0.16)
+  );
+
+  box-shadow:
+    inset 8px 8px 18px rgba(255,255,255,0.12),
+    inset -10px -12px 20px rgba(0,0,0,0.04),
+    0 10px 30px rgba(90,169,230,0.10);
+
+  border-radius: inherit;
+}
+
+.blob-shape::before,
+.blob-shape::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.blob-shape::before {
+  background: radial-gradient(
+    circle at 32% 28%,
+    rgba(255,255,255,0.22),
+    transparent 28%
+  );
+  mix-blend-mode: screen;
+}
+
+.blob-shape::after {
+  inset: 16%;
+  background: radial-gradient(
+    circle at 40% 35%,
+    rgba(255,255,255,0.10),
+    transparent 50%
+  );
+  filter: blur(12px);
+}
+
+@keyframes morphA {
+  0% {
+    border-radius: 34% 38% 32% 36% / 30% 34% 38% 35%;
+  }
+  20% {
+    border-radius: 40% 31% 36% 29% / 34% 27% 43% 32%;
+  }
+  40% {
+    border-radius: 29% 41% 31% 39% / 39% 33% 37% 30%;
+  }
+  60% {
+    border-radius: 42% 30% 35% 33% / 28% 40% 31% 42%;
+  }
+  80% {
+    border-radius: 32% 36% 28% 43% / 41% 30% 39% 29%;
+  }
+  100% {
+    border-radius: 34% 38% 32% 36% / 30% 34% 38% 35%;
+  }
+}
+
+@keyframes floatA {
+  0%, 100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  25% {
+    transform: translate(2px, -3px) rotate(1deg);
+  }
+  50% {
+    transform: translate(-2px, 2px) rotate(-1deg);
+  }
+  75% {
+    transform: translate(3px, 1px) rotate(0.5deg);
+  }
+}
+
+.chat-shell {
+  position: absolute;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border-radius: 1rem;
+  background: rgba(255,255,255,0.10);
+  backdrop-filter: blur(2px);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      /* justify-content: space-between; */
+      justify-content: center;
+      gap: 14px;
+      padding: 18px 20px 16px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .contact {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .avatar {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      background: linear-gradient(180deg, #7fc0f0 0%, #2f5f88 100%);
+      display: grid;
+      place-items: center;
+      color: white;
+      font-weight: 700;
+      font-size: 18px;
+      box-shadow: 0 6px 16px rgba(90, 169, 230, 0.28);
+      flex: 0 0 auto;
+    }
+
+    .meta {
+      min-width: 0;
+    }
+
+    .name {
+      font-size: 18px;
+      font-weight: 700;
+      line-height: 1.1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status {
+      margin-top: 4px;
+      font-size: 12px;
+      color: var(--text-soft);
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      display: none;
+    }
+
+    .icon-btn {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.16);
+      background: rgba(255,255,255,0.14);
+      display: grid;
+      place-items: center;
+      color: var(--text);
+      font-size: 16px;
+      user-select: none;
+    }
+
+    .messages {
+      flex: 1;
+      overflow: auto;
+      padding: 20px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scroll-behavior: smooth;
+    }
+
+    .day-divider {
+      align-self: center;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--text-soft);
+      background: rgba(255,255,255,0.22);
+      border: 1px solid rgba(255,255,255,0.16);
+    }
+
+    .row {
+      display: flex;
+      width: 100%;
+    }
+
+    .row.incoming { justify-content: flex-start; }
+    .row.outgoing { justify-content: flex-end; }
+  </style>
+  </head>
+  <body>
+    <div class="blob-wrap">
+      <div class="blob">
+        <div class="blob-shape"></div>
+        <div class="chat-shell">
+          <div class="topbar">
+            <div class="contact">
+              <div class="avatar">AI</div>
+              <div class="meta">
+                <div class="name">Market Assistant</div>
+                <div class="status">Live property insights</div>
+              </div>
+            </div>
+            <div class="actions">
+              <div class="icon-btn">⌕</div>
+              <div class="icon-btn">⤢</div>
+              <div class="icon-btn">⋯</div>
+            </div>
+          </div>
+
+          <div class="messages" id="messages">
+            <div class="day-divider">Today</div>
+
+            <div class="row incoming">
+              <div class="bubble">
+                Seattle inventory is trending slightly tighter this week.
+                <div class="time">10:18</div>
+              </div>
+            </div>
+
+            <div class="row outgoing">
+              <div class="bubble">
+                Show me the most important takeaways from the current dashboard.
+                <div class="time">10:19 <span
+                    class="double-check">✓✓</span></div>
+              </div>
+            </div>
+
+            <div class="row incoming">
+              <div class="bubble">
+                The strongest signal is total property value.
+                <div class="time">10:20</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="composer">
+            <div class="composer-shell">
+              <input class="composer-input" type="text"
+                placeholder="Ask about pricing, rent, listings..." />
+              <button class="send">➤</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    const messages = document.getElementById('messages');
+    messages.scrollTop = messages.scrollHeight;
+  </script>
+  </body>
+</html>
