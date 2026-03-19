@@ -337,7 +337,7 @@ document.getElementById('chatBtn').addEventListener('click', () => {
     movedToLeftBottom = true;
     for (let el of kpi_card) {
       el.classList.add('ban_animate');
-      console.log(el.className);
+      // console.log(el.className); 
     }
     for (let el of charts) {
       panelLeftBottom.appendChild(el);
@@ -842,3 +842,407 @@ window.updateDashboardFromZoom = (zoom, force = false) => {
   donutChart.update();
 };
 // updateDashboardFromZoom(DASHBOARD_ZOOM_RANGE.min, true);
+
+// interaction
+
+let fakeLiftInited = false;
+
+function initFakeLiftGhost() {
+  if (fakeLiftInited) return;
+  fakeLiftInited = true;
+
+  let ghost = null;
+  let currentSource = null;
+  let disabledIframes = [];
+  let dragController = null;
+  let dropRafId = 0;
+
+  let offsetX = 0;
+  let offsetY = 0;
+
+  const ghostState = {
+    x: 0,
+    y: 0,
+    rotX: 0,
+    rotY: 0,
+    scale: 1.02,
+    opacity: 1,
+    shadowX: 50,
+    shadowY: 100,
+    shadowBlur: 10,
+    shadowAlpha: 0.3,
+    highlightAlpha: 0.7,
+    innerAlpha: 0.2
+  };
+
+  const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+
+  function disableIframesDuringDrag() {
+    disabledIframes = [...document.querySelectorAll('iframe')];
+    disabledIframes.forEach((frame) => {
+      frame.dataset.prevPointerEvents = frame.style.pointerEvents || '';
+      frame.style.pointerEvents = 'none';
+    });
+  }
+
+  function restoreIframesAfterDrag() {
+    disabledIframes.forEach((frame) => {
+      frame.style.pointerEvents = frame.dataset.prevPointerEvents || '';
+      delete frame.dataset.prevPointerEvents;
+    });
+    disabledIframes = [];
+  }
+
+  function copyCanvasBitmap(fromEl, toEl) {
+    const srcCanvases = fromEl.querySelectorAll('canvas');
+    const dstCanvases = toEl.querySelectorAll('canvas');
+
+    srcCanvases.forEach((src, i) => {
+      const dst = dstCanvases[i];
+      if (!dst) return;
+
+      dst.width = src.width;
+      dst.height = src.height;
+      dst.style.width = getComputedStyle(src).width;
+      dst.style.height = getComputedStyle(src).height;
+
+      const ctx = dst.getContext('2d');
+      if (ctx) ctx.drawImage(src, 0, 0);
+    });
+  }
+
+  function applyGhostState() {
+    if (!ghost) return;
+
+    ghost.style.setProperty('--ghost-x', `${ghostState.x}px`);
+    ghost.style.setProperty('--ghost-y', `${ghostState.y}px`);
+    ghost.style.setProperty('--ghost-scale', `${ghostState.scale}`);
+    ghost.style.setProperty('--ghost-rot-x', `${ghostState.rotX}deg`);
+    ghost.style.setProperty('--ghost-rot-y', `${ghostState.rotY}deg`);
+    ghost.style.setProperty('--ghost-opacity', `${ghostState.opacity}`);
+
+    ghost.style.setProperty('--shadow-x', `${ghostState.shadowX}px`);
+    ghost.style.setProperty('--shadow-y', `${ghostState.shadowY}px`);
+    ghost.style.setProperty('--shadow-blur', `${ghostState.shadowBlur}px`);
+    ghost.style.setProperty('--shadow-alpha', `${ghostState.shadowAlpha}`);
+
+    ghost.style.setProperty('--highlight-alpha', `${ghostState.highlightAlpha}`);
+    ghost.style.setProperty('--inner-alpha', `${ghostState.innerAlpha}`);
+  }
+
+  function createGhost(el) {
+    const rect = el.getBoundingClientRect();
+    const clone = el.cloneNode(true);
+
+    clone.classList.add('drag-ghost', 'is-dragging');
+    clone.style.width = `${rect.width}px`;
+    clone.style.height = `${rect.height}px`;
+
+    document.body.appendChild(clone);
+    copyCanvasBitmap(el, clone);
+
+    return clone;
+  }
+
+  function moveGhost(clientX, clientY) {
+    if (!ghost) return;
+
+    ghostState.x = clientX - offsetX;
+    ghostState.y = clientY - offsetY;
+    ghostState.rotY = clamp((clientX - window.innerWidth / 2) * 0.01, -6, 6);
+    ghostState.rotX = clamp(-(clientY - window.innerHeight / 2) * 0.01, -6, 6);
+
+    ghostState.scale = 1.02;
+    ghostState.opacity = 1;
+
+    ghostState.shadowX = 50;
+    ghostState.shadowY = 100;
+    ghostState.shadowBlur = 10;
+    ghostState.shadowAlpha = 0.3;
+    ghostState.highlightAlpha = 0.7;
+    ghostState.innerAlpha = 0.2;
+
+    applyGhostState();
+  }
+
+  function stopDragListeners() {
+    dragController?.abort();
+    dragController = null;
+  }
+
+  function cleanupNow() {
+    stopDragListeners();
+
+    if (dropRafId) {
+      cancelAnimationFrame(dropRafId);
+      dropRafId = 0;
+    }
+
+    if (ghost) {
+      ghost.remove();
+      ghost = null;
+    }
+
+    if (currentSource) {
+      currentSource.classList.remove('fake-lift-source');
+      currentSource = null;
+    }
+
+    restoreIframesAfterDrag();
+  }
+
+  function playDropAnimationAndCleanup() {
+    if (!ghost) {
+      cleanupNow();
+      return;
+    }
+
+    ghost.classList.remove('is-dragging');
+    ghost.classList.add('is-dropping');
+
+    const startY = ghostState.y;
+    const startScale = ghostState.scale;
+    const startShadowX = ghostState.shadowX;
+    const startShadowY = ghostState.shadowY;
+    const startShadowBlur = ghostState.shadowBlur;
+    const startShadowAlpha = ghostState.shadowAlpha;
+    const startHighlightAlpha = ghostState.highlightAlpha;
+    const startInnerAlpha = ghostState.innerAlpha;
+
+    // 这里不是现实单位 9.8 m/s²，而是映射到屏幕的 px/s²
+    // 这组数值对 60~80px 掉落看起来比较像“重力”
+    const gravity = 1800;     // px / s²
+    const maxDrop = 72;       // px
+    const durationSec = Math.sqrt((2 * maxDrop) / gravity);
+    const durationMs = durationSec * 1000;
+
+    const startTime = performance.now();
+
+    const step = (now) => {
+      const elapsedSec = Math.min((now - startTime) / 1000, durationSec);
+      const progress = elapsedSec / durationSec;
+
+      // 自由落体：s = 1/2 g t²
+      const dropY = Math.min(0.5 * gravity * elapsedSec * elapsedSec, maxDrop);
+
+      // 阴影靠拢速度可以略快于物体本身
+      const shadowT = 1 - Math.pow(1 - progress, 2.2);
+
+      // 后半段快速淡出
+      const fadeT = progress < 0.62 ? 0 : (progress - 0.62) / 0.38;
+
+      ghostState.y = startY + dropY;
+      ghostState.scale = lerp(startScale, 0.35, progress);
+      ghostState.opacity = lerp(1, 0, fadeT);
+
+      ghostState.shadowX = lerp(startShadowX, 0, shadowT);
+      ghostState.shadowY = lerp(startShadowY, 30, shadowT);
+      ghostState.shadowBlur = lerp(startShadowBlur, 0, shadowT);
+      ghostState.shadowAlpha = lerp(startShadowAlpha, 0, shadowT);
+
+      ghostState.highlightAlpha = lerp(startHighlightAlpha, 0.25, progress);
+      ghostState.innerAlpha = lerp(startInnerAlpha, 0.05, progress);
+
+      applyGhostState();
+
+      if (progress < 1) {
+        dropRafId = requestAnimationFrame(step);
+      } else {
+        dropRafId = 0;
+        const ghostRect = ghost?.getBoundingClientRect();
+        triggerDropIntoChatFrame(currentSource, ghostRect);
+        cleanupNow();
+      }
+    };
+
+    dropRafId = requestAnimationFrame(step);
+  }
+
+  document.addEventListener('pointerdown', (e) => {
+    if (!panelLeftBottom.classList.contains('layout_2')) return;
+    if (e.button !== 0) return;
+    if (ghost) return;
+
+    const el = e.target.closest('.kpi_card, .chart_box');
+    if (!el || !panelLeftBottom.contains(el)) return;
+
+    const rect = el.getBoundingClientRect();
+
+    currentSource = el;
+    currentSource.classList.add('fake-lift-source');
+
+    offsetX = e.clientX - rect.left;
+    offsetY = e.clientY - rect.top;
+
+    ghost = createGhost(el);
+
+    disableIframesDuringDrag();
+    moveGhost(e.clientX, e.clientY);
+
+    dragController = new AbortController();
+    const { signal } = dragController;
+
+    window.addEventListener(
+      'pointermove',
+      (evt) => {
+        if (!ghost) return;
+        moveGhost(evt.clientX, evt.clientY);
+      },
+      { signal }
+    );
+
+    window.addEventListener(
+      'pointerup',
+      () => {
+        stopDragListeners();
+        playDropAnimationAndCleanup();
+      },
+      { signal, once: true }
+    );
+
+    window.addEventListener(
+      'pointercancel',
+      () => {
+        stopDragListeners();
+        playDropAnimationAndCleanup();
+      },
+      { signal, once: true }
+    );
+  });
+}
+
+initFakeLiftGhost();
+
+async function triggerDropIntoChatFrame(sourceEl, ghostRect) {
+  if (!ghostRect) return;
+
+  const chat = window_chat.querySelector('iframe');
+  if (!chat) return;
+
+  const splashFn = chat.contentWindow?.spawnSplashAt;
+  const insertTokenFn = chat.contentWindow?.insertDashboardCardToken;
+  const insertAttachmentFn = chat.contentWindow?.insertExternalAttachmentFile;
+
+  const frameRect = chat.getBoundingClientRect();
+
+  const impactX = ghostRect.left + ghostRect.width * 0.5;
+  const impactY = ghostRect.top + ghostRect.height * 2;
+
+  if (
+    impactX < frameRect.left ||
+    impactX > frameRect.right ||
+    impactY < frameRect.top ||
+    impactY > frameRect.bottom
+  ) {
+    return;
+  }
+
+  const localX = impactX - frameRect.left;
+  const localY = impactY - frameRect.top;
+
+  let remPx = 16;
+  try {
+    remPx = parseFloat(
+      chat.contentWindow.getComputedStyle(
+        chat.contentDocument.documentElement
+      ).fontSize
+    ) || 16;
+  } catch (err) { }
+
+  const safeMargin = remPx * 4;
+
+  if (
+    localX < safeMargin ||
+    localX > frameRect.width - safeMargin ||
+    localY < safeMargin ||
+    localY > frameRect.height - safeMargin
+  ) {
+    return;
+  }
+
+  if (typeof splashFn === 'function') {
+    splashFn({
+      x: localX,
+      y: localY,
+      size: 640
+    });
+  }
+
+  // ===== KPI 卡片 =====
+  if (sourceEl?.classList.contains('kpi_card')) {
+    const payload = buildDraggedDashboardPayload(sourceEl);
+
+    if (payload && typeof insertTokenFn === 'function') {
+      setTimeout(() => {
+        insertTokenFn(payload);
+      }, 120);
+    }
+
+    return;
+  }
+
+  // ===== Chart 盒子：转 PNG，按图片附件塞进 chat =====
+  if (sourceEl?.classList.contains('chart_box')) {
+    const file = await buildDraggedChartFile(sourceEl);
+
+    if (file && typeof insertAttachmentFn === 'function') {
+      setTimeout(() => {
+        insertAttachmentFn(file);
+      }, 120);
+    }
+  }
+}
+
+function buildDraggedDashboardPayload(el) {
+  if (!el) return null;
+
+  if (el.classList.contains('kpi_card')) {
+    const allKpiCards = [...document.querySelectorAll('.kpi_card')];
+    const index = allKpiCards.indexOf(el);
+    if (index === -1) return null;
+
+    const title = el.querySelector('.kpi_title')?.textContent?.trim() || 'KPI';
+    const numberText = cards[index]?.value || '';
+    const unitText = unitEls[index]?.textContent?.trim() || '';
+    const value = `${numberText}${unitText ? ' ' + unitText : ''}`.trim();
+
+    return {
+      kind: 'kpi',
+      title,
+      value
+    };
+  }
+
+  return null;
+}
+
+function buildDraggedChartFile(el) {
+  return new Promise((resolve) => {
+    if (!el || !el.classList.contains('chart_box')) {
+      resolve(null);
+      return;
+    }
+
+    const canvas = el.querySelector('canvas');
+    if (!canvas) {
+      resolve(null);
+      return;
+    }
+
+    const filename = `${canvas.id || 'chart'}.png`;
+
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        resolve(null);
+        return;
+      }
+
+      const file = new File([blob], filename, {
+        type: 'image/png'
+      });
+
+      resolve(file);
+    }, 'image/png');
+  });
+}

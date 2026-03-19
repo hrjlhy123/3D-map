@@ -5,6 +5,7 @@
 .panel_left_bottom.layout_2 .kpi_card {
   display: block;
   height: 50px;
+  border-radius: 1rem;
 }
 
 .panel_left_bottom.layout_2 .kpi_title {
@@ -143,6 +144,57 @@
   /* min-width: 1.2em;  */
   text-align: left;
   justify-content: flex-start;
+}
+
+.drag-ghost {
+  --ghost-x: 0px;
+  --ghost-y: 0px;
+  --ghost-scale: 1.02;
+  --ghost-rot-x: 0deg;
+  --ghost-rot-y: 0deg;
+  --ghost-opacity: 1;
+
+  --shadow-x: 50px;
+  --shadow-y: 100px;
+  --shadow-blur: 10px;
+  --shadow-alpha: 0.3;
+
+  --highlight-alpha: 0.7;
+  --inner-alpha: 0.2;
+
+  position: fixed;
+  left: 0;
+  top: 0;
+  margin: 0;
+  pointer-events: none;
+  z-index: 999;
+  border-radius: 1rem;
+  overflow: hidden;
+  will-change: transform, opacity, box-shadow;
+
+  transform: translate3d(var(--ghost-x), var(--ghost-y), 0)
+    scale(var(--ghost-scale)) rotateX(var(--ghost-rot-x))
+    rotateY(var(--ghost-rot-y));
+
+  opacity: var(--ghost-opacity);
+
+  box-shadow:
+    var(--shadow-x) var(--shadow-y) var(--shadow-blur)
+      rgba(40, 70, 100, var(--shadow-alpha)),
+    inset 1px 1px 1px rgba(255, 255, 255, var(--highlight-alpha)),
+    inset -2px -2px 2px rgba(85, 91, 100, var(--inner-alpha));
+}
+
+.drag-ghost.is-dragging {
+  cursor: grabbing;
+}
+
+.drag-ghost.is-dropping {
+  /* 这里只作为状态标记，真正下落由 JS 更新 CSS 变量 */
+}
+
+.fake-lift-source {
+  filter: brightness(0.98);
 }
 
 .panel_left_bottom.layout_2 > .chart_box {

@@ -310,9 +310,9 @@ A bottom progress bar animates during startup, and a runtime log shows metrics s
 
 Average resource usage during execution:
 
-- **CPU (Intel Core i7-11800H): ~10%**
-- **GPU (NVIDIA RTX 3080 Laptop GPU 90W): ~30%**
-- **Memory: ~2400 MB**
+- **CPU (Intel Core i7-11800H): ~6%**
+- **GPU (NVIDIA RTX 3080 Laptop GPU 90W): ~27%**
+- **Memory: ~600 MB**
 
 These numbers suggest that the prototype benefits from batched rendering, shared GPU buffers, incremental deployment, and visible-region tile selection while still leaving room for future extensions.
 

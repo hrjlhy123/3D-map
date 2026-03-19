@@ -1939,11 +1939,10 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
             return mixed;
         }
+        const map = document.querySelector(`#map`)
 
         function enterOrbitMode() {
             if (orbitMode || orbitTransition) return;
-
-            const map = document.querySelector(`#map`)
 
             map.classList.add(`layout_2`)
 
@@ -1988,9 +1987,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         function exitOrbitMode() {
-            if ((!orbitMode && !orbitTransition) || !orbitSavedState) return;
 
             map.classList.remove(`layout_2`)
+            if ((!orbitMode && !orbitTransition) || !orbitSavedState) return;
 
             // 如果已经在 orbit，就从当前 orbit 姿态退回
             const fromState = orbitTransition?.active
@@ -2016,6 +2015,7 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         }
 
         window.toggleOrbitMode = () => {
+            // console.log(`orbitMode:`, orbitMode)
             if (orbitMode) {
                 exitOrbitMode();
             } else {
@@ -2308,7 +2308,6 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         log.textContent =
             `FPS: ${fps}
 Delta: ${(deltaTime * 1000).toFixed(2)} ms
-Buildings: ${GPUResources.data.rendering.indexByteOffset / 12}
 Received: ${stats.received}
 Pending: ${GPUResources.data.pending.length}
 Processed: ${stats.processed}
@@ -2319,14 +2318,31 @@ IndexMB: ${indexMB} MB`
 
     // === Render ===
     let frame, lastTime, deltaTime, PAUSE_RENDER = false, STARTED = false
+    let interactionBusy = false
+    let lastInteractionAt = 0
     lastTime = performance.now()
     frame = async (now) => {
         deltaTime = (now - lastTime) / 1000
         lastTime = now
+        // if (!PAUSE_RENDER) {
+        //     data_deploy(device)
+        //     camera(mat4, GPUResources, device, matrix)
+        //     interaction(deltaTime)
+        //     render(deltaTime)
+        //     FPS(now)
+        // }
         if (!PAUSE_RENDER) {
             data_deploy(device)
             camera(mat4, GPUResources, device, matrix)
-            await interaction(deltaTime)
+
+            if (!interactionBusy && now - lastInteractionAt > 80) {
+                interactionBusy = true
+                lastInteractionAt = now
+                interaction(deltaTime).finally(() => {
+                    interactionBusy = false
+                })
+            }
+
             render(deltaTime)
             FPS(now)
         }

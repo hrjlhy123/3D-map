@@ -87,6 +87,13 @@ body * {
   font-size: 14px !important;
 }
 
+.panel_left_bottom.layout_2 > div:hover {
+  cursor: grab;
+  box-shadow:
+    3px 3px 6px rgba(85, 91, 100, 0.5),
+    -1px -1px 2px rgba(255, 255, 255, 0.7);
+}
+
 .ban_animate,
 .ban_animate * {
   transition: none !important;
@@ -276,4 +283,149 @@ body * {
 #chat > iframe {
   width: 100%;
   height: 100%;
+  user-select: none;
+}
+
+#chatBtn {
+  position: fixed;
+  left: 3.5rem;
+  bottom: 1.5rem;
+
+  width: 4rem;
+  height: 4rem;
+  padding: 0;
+  border: 0;
+  outline: none;
+  cursor: pointer;
+  position: fixed;
+
+  display: grid;
+  place-items: center;
+
+  background: linear-gradient(
+    180deg,
+    rgba(159, 208, 245, 0.22),
+    rgba(90, 169, 230, 0.16)
+  );
+
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+
+  box-shadow:
+    inset 8px 8px 18px rgba(255, 255, 255, 0.22),
+    inset -10px -12px 20px rgba(0, 0, 0, 0.08),
+    0 10px 30px rgba(90, 169, 230, 0.2);
+
+  border-radius: 43% 57% 51% 49% / 39% 42% 58% 61%;
+  animation:
+    morphA 5s ease-in-out infinite,
+    floatA 5.5s ease-in-out infinite;
+
+  overflow: hidden;
+}
+
+#chatBtn::before,
+#chatBtn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+#chatBtn::before {
+  mix-blend-mode: screen;
+  background: radial-gradient(
+    circle at 32% 28%,
+    rgba(255, 255, 255, 0.45),
+    transparent 28%
+  );
+  opacity: 0.55;
+  animation: highlightA 5s ease-in-out infinite;
+}
+
+#chatBtn::after {
+  inset: 16%;
+  background: radial-gradient(
+    circle at 40% 35%,
+    rgba(255, 255, 255, 0.18),
+    transparent 50%
+  );
+  filter: blur(8px);
+}
+
+#chatBtn img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+  pointer-events: none;
+}
+
+#chatBtn:hover > img {
+  animation: rotateA 0.075s infinite;
+}
+
+#chatBtn:active {
+  transform: scale(0.98);
+}
+
+@keyframes morphA {
+  0% {
+    border-radius: 43% 57% 51% 49% / 39% 42% 58% 61%;
+  }
+  20% {
+    border-radius: 55% 45% 60% 40% / 47% 31% 69% 53%;
+  }
+  40% {
+    border-radius: 38% 62% 46% 54% / 56% 45% 55% 44%;
+  }
+  60% {
+    border-radius: 61% 39% 52% 48% / 35% 58% 42% 65%;
+  }
+  80% {
+    border-radius: 49% 51% 36% 64% / 60% 43% 57% 40%;
+  }
+  100% {
+    border-radius: 43% 57% 51% 49% / 39% 42% 58% 61%;
+  }
+}
+
+@keyframes floatA {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg);
+  }
+  25% {
+    transform: translate(2px, -3px) rotate(1deg);
+  }
+  50% {
+    transform: translate(-2px, 2px) rotate(-1deg);
+  }
+  75% {
+    transform: translate(3px, 1px) rotate(0.5deg);
+  }
+}
+
+@keyframes highlightA {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes rotateA {
+  0%,
+  100% {
+    transform: rotateY(0deg);
+  }
+  50% {
+    transform: rotateY(180deg);
+  }
 }

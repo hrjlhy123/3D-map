@@ -4,13 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Embedded Chat Panel</title>
-    <link rel="stylesheet" href="./css/chat.css" />
+    <link rel="stylesheet" href="./css/chat.css">
   </head>
   <body>
     <div class="blob-wrap">
       <div class="blob">
         <div class="blob-shape"></div>
-
         <div class="chat-shell">
           <div class="topbar">
             <div class="contact">
@@ -19,6 +18,11 @@
                 <div class="name">Market Assistant</div>
                 <div class="status">Live property insights</div>
               </div>
+            </div>
+            <div class="actions">
+              <div class="icon-btn">⌕</div>
+              <div class="icon-btn">⤢</div>
+              <div class="icon-btn">⋯</div>
             </div>
           </div>
 
@@ -50,30 +54,34 @@
 
           <div class="composer">
             <div class="composer-shell">
-              <button id="attachBtn" class="attach-btn" type="button">+</button>
-
-              <div
-                id="composerInput"
-                class="composer_input"
-                contenteditable="true"
-                role="textbox"
-                aria-multiline="true"
-                data-placeholder="Ask about pricing, rent, listings..."></div>
-
+              <button id="attachBtn" class="attach-btn" type="button"
+                aria-label="Attach image or video">＋</button>
               <input
-                id="fileInput"
-                type="file"
-                multiple
-                accept="image/png,image/jpeg,image/webp,image/gif,image/avif,video/mp4,video/webm,video/ogg"
-                hidden />
-
-              <button id="sendBtn" class="send" type="button">SEND</button>
+                id="composerInput"
+                class="composer-input"
+                type="text"
+                maxlength="1500"
+                autocomplete="off"
+                placeholder="Ask about pricing, rent, listings..." />
+              <button id="sendBtn" class="send" type="button"
+                aria-label="Send">➤</button>
             </div>
+
+            <input
+              id="fileInput"
+              class="sr-only"
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif,image/avif,video/mp4,video/webm,video/ogg"
+              multiple />
+
+            <div id="attachmentPreview" class="attachment-preview"
+              aria-live="polite"></div>
+            <div class="composer-note">Text is inserted as plain text only.
+              Attachments are limited to safe image/video types.</div>
           </div>
         </div>
       </div>
     </div>
-
     <div class="ripple-stage">
       <canvas id="rippleCanvas" class="ripple-canvas" width="640"
         height="360"></canvas>
@@ -87,7 +95,6 @@
       crossorigin="anonymous">
       <source src="./vid/7317370-preview-trim.mp4" type="video/mp4" />
     </video>
-
     <script type="module" src="./function/chat.js"></script>
   </body>
 </html>
