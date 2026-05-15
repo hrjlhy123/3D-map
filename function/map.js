@@ -375,7 +375,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
     // const ws = new WebSocket("ws://localhost:8080")
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+    const appBasePath = window.location.pathname.startsWith("/3D-map/") ? "/3D-map" : "";
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}${appBasePath}/ws`);
     {
         /* === Model Data === */
         // fetch data (websocket)
