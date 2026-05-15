@@ -8,6 +8,8 @@ A browser-based Geographic Information System (GIS) and dashboard prototype that
 
 This project demonstrates how a modern web stack can support interactive exploration of city-scale spatial data directly in the browser. The system uses a Node.js + WebSocket backend to stream tessellated geographic features, and a WebGPU-based frontend to render large numbers of buildings efficiently with a GPU-first pipeline. The current prototype focuses on Seattle-area OpenStreetMap building data and emphasizes architecture, rendering performance, streaming efficiency, and interactive visualization.
 
+**Live Demo:** [https://www.hrjlhy.com/3D-map/](https://www.hrjlhy.com/3D-map/)
+
 ---
 
 ## Features
