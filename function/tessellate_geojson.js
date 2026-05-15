@@ -32,7 +32,9 @@ async function readNdjsonTile(filePath, onFeature) {
     }
 }
 
-const TILE_ROOT = path.resolve("../data_hex_tiles");
+// const TILE_ROOT = path.resolve("../data_hex_tiles");
+const TILE_ROOT = process.env.TILE_ROOT ?? path.resolve(process.cwd(), "data_hex_tiles");
+const PORT = Number(process.env.PORT ?? 8080);
 
 function tileFile(layer, res, id_h3) {
     return path.join(TILE_ROOT, layer, `r${res}`, `${id_h3}.ndjson`);
@@ -67,9 +69,12 @@ function h3idsForBbox(bbox, res) {
 
 const server = http.createServer()
 const wss = new WebSocketServer({ server })
-server.listen(8080, () => {
-    console.log("WS server: ws://localhost: 8080")
-})
+// server.listen(8080, () => {
+//     console.log("WS server: ws://localhost: 8080")
+// })
+server.listen(PORT, "127.0.0.1", () => {
+  console.log(`WS server listening on ${PORT}`);
+});
 
 wss.on("connection", (ws) => {
     console.log("client connected")

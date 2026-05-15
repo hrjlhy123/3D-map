@@ -373,7 +373,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         maxLat: null
     }
 
-    const ws = new WebSocket("ws://localhost:8080")
+    // const ws = new WebSocket("ws://localhost:8080")
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
     {
         /* === Model Data === */
         // fetch data (websocket)
