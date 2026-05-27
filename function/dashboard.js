@@ -118,7 +118,7 @@ const barChart = new Chart(barCtx, {
       hoverBackgroundColor: '#5aa2dc',
       borderRadius: 999,
       borderSkipped: false,
-      barThickness: 14,      // 比原来细
+      barThickness: 8,      // 比原来细
       maxBarThickness: 14
     }]
   },

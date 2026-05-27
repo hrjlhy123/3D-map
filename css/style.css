@@ -2,6 +2,19 @@
   --rx: 21.8deg;
   --rz: 0deg;
   --s: 1.8;
+  --page-pad: clamp(0.75rem, 1.8vmin, 2rem);
+  --page-gap: clamp(0.75rem, 1.8vmin, 2rem);
+  --panel-gap: clamp(0.75rem, 1.7vmin, 2rem);
+  --chart-row-height: clamp(8.5rem, 17vh, 15rem);
+  --chart-row-gap: clamp(1rem, 3vw, 4rem);
+  --chart-card-width: clamp(16rem, 23vw, 30rem);
+  --map-radius: clamp(0.5rem, 1vmin, 1rem);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
 html,
@@ -16,14 +29,14 @@ body {
 }
 
 body {
-  padding: 2rem;
-  box-sizing: border-box;
+  padding: var(--page-pad);
   background:
     radial-gradient(circle at 20% 80%, #a6c6dd 0%, transparent 40%),
     linear-gradient(180deg, #b7d1e6 0%, #d5e6f2 50%, #eef6fb 100%);
   display: flex;
   justify-content: space-between;
-  gap: 2rem;
+  align-items: stretch;
+  gap: var(--page-gap);
 }
 
 body * {
@@ -31,16 +44,20 @@ body * {
 }
 
 .panel_left {
-  flex: 1;
+  flex: 0 1 clamp(14rem, 22vw, 24rem);
+  min-width: clamp(12rem, 18vw, 18rem);
+  max-width: 26rem;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  gap: 2rem;
+  gap: var(--panel-gap);
 }
 .panel_left_top {
-  margin: 0 4rem 0 0;
-  padding: 0 0 0 1rem;
+  width: 100%;
+  margin: 0;
+  padding: 0 clamp(0rem, 0.8vw, 1rem);
 }
 
 .panel_left_top > * {
@@ -49,29 +66,31 @@ body * {
 
 .panel_left_top > p {
   margin: 0;
-  line-height: 2.75rem;
-  font-size: 48px;
+  line-height: 1.04;
+  font-size: clamp(1.7rem, 2.6vw, 3rem);
   font-weight: 700;
   color: #2f5f88;
+  text-wrap: balance;
 }
 
 .panel_left_top > h4 {
   padding: 0.5rem 0.25rem 0;
-  font-size: 12px;
+  font-size: clamp(0.68rem, 0.78vw, 0.82rem);
+  line-height: 1.35;
   color: #3c5f7f;
   font-weight: 200;
 }
 
 .panel_left_bottom {
-  box-sizing: border-box;
   width: 100%;
+  min-height: 0;
   flex-grow: 1;
-  padding: 0 1rem;
+  padding: 0 clamp(0rem, 0.9vw, 1rem);
 
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: repeat(5, minmax(0, 1fr));
-  gap: 1rem;
+  grid-template-rows: repeat(4, minmax(0, 1fr));
+  gap: clamp(0.5rem, 1.1vmin, 1rem);
 }
 
 .panel_left_bottom > * {
@@ -100,31 +119,34 @@ body * {
 }
 
 .panel_right {
-  flex: 3;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 2rem;
+  gap: var(--panel-gap);
   /* display: none; */
 }
 
 .panel_right_top {
-  /* flex: 1; */
-  flex: 0 0 1;
+  flex: 0 0 var(--chart-row-height);
   display: flex;
   flex-direction: row;
-  justify-content: space-between;
-  gap: 1rem;
+  justify-content: space-evenly;
+  align-items: stretch;
+  gap: var(--chart-row-gap);
   width: 100%;
   min-width: 0;
+  min-height: 0;
 }
 
 #map {
   width: 100%;
   height: 100%;
-  flex: 3;
-  flex-grow: 1;
+  min-height: 0;
+  flex: 1 1 auto;
   position: relative;
-  border-radius: 1rem;
+  border-radius: var(--map-radius);
   overflow: hidden;
   /* transform: skew(-30deg, 0); */
 }
@@ -163,6 +185,9 @@ body * {
   position: absolute;
   bottom: 0;
   right: 0;
+  max-width: min(38rem, 60%);
+  overflow: hidden;
+  font-size: clamp(0.65rem, 0.8vw, 0.9rem);
 }
 
 #log2 {
@@ -257,26 +282,29 @@ body * {
 
 .button {
   /* padding: 1rem 0 0; */
-  padding: 0 0 1rem 1rem;
+  padding: 0 0 clamp(0.5rem, 1vmin, 1rem) clamp(0.5rem, 1vmin, 1rem);
   position: absolute;
   bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 #chat {
   position: fixed;
-  width: 60%;
+  width: min(60rem, 70vw);
   height: 100%;
-  left: 20%;
-  top: 0%;
+  left: 50%;
+  top: 0;
   opacity: 0;
-  transform: scale(0.9);
+  transform: translateX(-50%) scale(0.9);
   transform-origin: center center;
   pointer-events: none;
 }
 
 #chat.open {
   opacity: 1;
-  transform: scale(1);
+  transform: translateX(-50%) scale(1);
   pointer-events: auto;
 }
 
@@ -288,11 +316,11 @@ body * {
 
 #chatBtn {
   position: fixed;
-  left: 3.5rem;
-  bottom: 1.5rem;
+  left: calc(var(--page-pad) + 1.5rem);
+  bottom: max(1rem, var(--page-pad));
 
-  width: 4rem;
-  height: 4rem;
+  width: clamp(3rem, 4vmin, 4rem);
+  height: clamp(3rem, 4vmin, 4rem);
   padding: 0;
   border: 0;
   outline: none;
@@ -322,6 +350,47 @@ body * {
     floatA 5.5s ease-in-out infinite;
 
   overflow: hidden;
+}
+
+@media (max-aspect-ratio: 4 / 3) {
+  :root {
+    --page-pad: clamp(0.5rem, 1.4vmin, 1rem);
+    --page-gap: clamp(0.5rem, 1.4vmin, 1rem);
+    --panel-gap: clamp(0.5rem, 1.3vmin, 1rem);
+    --chart-row-height: clamp(7rem, 15vh, 10rem);
+    --chart-row-gap: clamp(0.5rem, 1.2vw, 1rem);
+    --chart-card-width: clamp(13rem, 24vw, 17rem);
+  }
+
+  .panel_left {
+    flex-basis: clamp(11.5rem, 24vw, 16rem);
+    min-width: 11.5rem;
+  }
+
+  .panel_left_top > p {
+    font-size: clamp(1.35rem, 2.5vw, 2rem);
+  }
+
+  .panel_left_top > h4 {
+    font-size: clamp(0.62rem, 0.9vw, 0.72rem);
+  }
+
+  #log {
+    max-width: 48%;
+  }
+}
+
+@media (min-aspect-ratio: 18 / 9) {
+  :root {
+    --chart-row-height: clamp(8rem, 13vh, 13.5rem);
+    --chart-row-gap: clamp(2rem, 3vw, 4rem);
+    --chart-card-width: clamp(24rem, 17vw, 34rem);
+  }
+
+  .panel_left {
+    flex-basis: clamp(18rem, 18vw, 28rem);
+    max-width: 30rem;
+  }
 }
 
 #chatBtn::before,
