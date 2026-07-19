@@ -1,3 +1,11 @@
+import { marked } from "../node_modules/marked/lib/marked.esm.js";
+import DOMPurify from "../node_modules/dompurify/dist/purify.es.mjs";
+
+marked.setOptions({
+    gfm: true,
+    breaks: true,
+});
+
 const messages = document.getElementById("messages");
 messages.scrollTop = messages.scrollHeight;
 
@@ -400,6 +408,28 @@ function safePlainText(raw) {
         .trim();
 }
 
+function renderMarkdownInto(element, markdownText) {
+    const rawMarkdown = String(markdownText ?? "");
+
+    const unsafeHtml = marked.parse(rawMarkdown);
+
+    const safeHtml = DOMPurify.sanitize(unsafeHtml, {
+        USE_PROFILES: {
+            html: true,
+        },
+    });
+
+    element.innerHTML = safeHtml;
+    element.classList.add("markdown-body");
+
+    // 外部链接在新窗口打开
+    element
+        .querySelectorAll("a[href]")
+        .forEach((link) => {
+            link.target = "_blank";
+            link.rel = "noopener noreferrer";
+        });
+}
 
 function isSelectionInsideComposer() {
     const sel = window.getSelection();
@@ -654,7 +684,8 @@ function appendMessage({
     direction = "outgoing",
     text = "",
     files = [],
-    dashboardCards = []
+    dashboardCards = [],
+    markdown = false,
 }) {
     const row = document.createElement("div");
     row.className = `row ${direction}`;
@@ -667,7 +698,13 @@ function appendMessage({
     if (text) {
         textEl = document.createElement("div");
         textEl.className = "message-text";
-        textEl.textContent = text;
+
+        if (markdown) {
+            renderMarkdownInto(textEl, text);
+        } else {
+            textEl.textContent = text;
+        }
+
         bubble.appendChild(textEl);
     }
 
@@ -678,29 +715,38 @@ function appendMessage({
     });
 
     files.forEach((file) => {
-        bubble.appendChild(createMediaNode(file));
+        bubble.appendChild(
+            createMediaNode(file)
+        );
     });
 
     const timeEl = document.createElement("div");
     timeEl.className = "time";
 
     if (direction === "outgoing") {
-        timeEl.textContent = `${getNowTimeLabel()} `;
+        timeEl.textContent =
+            `${getNowTimeLabel()} `;
 
-        const doubleCheck = document.createElement("span");
-        doubleCheck.className = "double-check";
+        const doubleCheck =
+            document.createElement("span");
+
+        doubleCheck.className =
+            "double-check";
+
         doubleCheck.textContent = "✓✓";
 
         timeEl.appendChild(doubleCheck);
     } else {
-        timeEl.textContent = getNowTimeLabel();
+        timeEl.textContent =
+            getNowTimeLabel();
     }
 
     bubble.appendChild(timeEl);
     row.appendChild(bubble);
     messages.appendChild(row);
 
-    messages.scrollTop = messages.scrollHeight;
+    messages.scrollTop =
+        messages.scrollHeight;
 
     return {
         row,
@@ -995,10 +1041,14 @@ async function requestRagReply(text, dashboardCards = [], files = []) {
 
         appendMessage({
             direction: "incoming",
+
             text:
                 answer ||
                 "The GIS assistant returned an empty response.",
+
             files: [],
+
+            markdown: true,
         });
     } catch (error) {
         console.error("RAG request failed:", error);
