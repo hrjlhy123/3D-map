@@ -334,9 +334,8 @@ body * {
   position: fixed;
   left: calc(var(--page-pad) + 1.5rem);
   bottom: max(1rem, var(--page-pad));
-
-  width: clamp(3rem, 4vmin, 4rem);
-  height: clamp(3rem, 4vmin, 4rem);
+  width: clamp(4rem, 6vmin, 6rem);
+  height: clamp(4rem, 6vmin, 6rem);
   padding: 0;
   border: 0;
   outline: none;
