@@ -388,9 +388,21 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         window.location.hostname === "localhost" ||
         window.location.hostname === "127.0.0.1";
 
+    const wsProtocol =
+        window.location.protocol === "https:"
+            ? "wss:"
+            : "ws:";
+
+    const appBasePath =
+        window.location.pathname.startsWith("/3D-map/")
+            ? "/3D-map"
+            : "";
+
     const wsUrl = isLocal
         ? "ws://127.0.0.1:8080"
-        : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+        : `${wsProtocol}//${window.location.host}${appBasePath}/ws`;
+
+    console.log("[WS] Connecting to:", wsUrl);
 
     const ws = new WebSocket(wsUrl);
     {
