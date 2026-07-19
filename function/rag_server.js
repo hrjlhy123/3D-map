@@ -16,7 +16,7 @@ const openai = new OpenAI({
 });
 
 const PORT = Number(
-    process.env.RAG_PORT || 3006
+    process.env.RAG_PORT || 3007
 );
 
 const VECTOR_STORE_ID =
