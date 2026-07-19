@@ -129,7 +129,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 14px;
-  padding: 14px 20px;
+  padding: calc(2.5% + 14px) 20px 14px;
   border-bottom: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.1);
 }
@@ -176,8 +176,8 @@ body {
 .messages {
   flex: 1;
   overflow: auto;
-  margin: 0 20px;
-  padding: 10px 0 0;
+  margin: 0 2.5% 2.5%;
+  padding: 10px 2.5% 0;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -201,7 +201,7 @@ body {
   align-self: center;
   padding: 6px 12px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 16px;
   color: var(--text-soft);
   background: rgba(255, 255, 255, 0.22);
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -229,7 +229,7 @@ body {
   box-shadow: var(--shadow);
   border: 1px solid rgba(255, 255, 255, 0.16);
   line-height: 1.45;
-  font-size: 14px;
+  font-size: 16px;
 }
 
 .incoming .bubble {
@@ -280,7 +280,7 @@ body {
 }
 
 .composer {
-  padding: 14px 16px 22px;
+  padding: 14px 16px calc(22px + 2.5%);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -498,4 +498,38 @@ body {
   margin-top: 0.12rem;
   font-size: 0.8rem;
   opacity: 0.82;
+}
+
+.thinking-row .bubble {
+  opacity: 0.82;
+}
+
+.thinking-row .message-text {
+  white-space: pre-wrap;
+}
+
+.thinking-row .message-text::after {
+  content: "";
+  display: inline-block;
+  width: 1.2em;
+  animation: thinking-dots 1.2s steps(4, end) infinite;
+}
+
+@keyframes thinking-dots {
+  0% {
+    content: "";
+  }
+
+  25% {
+    content: ".";
+  }
+
+  50% {
+    content: "..";
+  }
+
+  75%,
+  100% {
+    content: "...";
+  }
 }

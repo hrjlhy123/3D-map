@@ -48,11 +48,12 @@ struct FSOut {
     @location(0) color : vec4 < f32>,
 };
 
+
 struct Interaction {
+    id_hover : u32,
     id_selected : u32,
     _pad0 : u32,
     _pad1 : u32,
-    _pad2 : u32,
 };
 
 @group(0) @binding(2)
@@ -64,14 +65,28 @@ fn fragmentMain(input : FSIn) -> FSOut {
 
     let red = vec3 < f32 > (0.75, 0.12, 0.12);
     let yellow = vec3 < f32 > (0.95, 0.75, 0.18);
-    let orange = vec3 <f32> (0.94510, 0.60000, 0.34510);
-    let blue = vec3 <f32> (0.25098, 0.55686, 0.79608);
+    let orange = vec3 < f32 > (0.94510, 0.60000, 0.34510);
+    let blue = vec3 < f32 > (0.25098, 0.55686, 0.79608);
+    let green = vec3 < f32 > (0.25098, 0.76078, 0.40000);
 
     var baseColor : vec3 < f32>;
-    if (interaction.id_selected != 0u && input.id == interaction.id_selected)
+
+    if (
+    interaction.id_selected != 0u &&
+    input.id == interaction.id_selected
+    )
     {
+        // 选中的建筑：绿色
+        baseColor = green;
+    } else if (
+    interaction.id_hover != 0u &&
+    input.id == interaction.id_hover
+    )
+    {
+        // 悬停的建筑：橘色
         baseColor = orange;
     } else {
+        // 建筑：蓝色
         baseColor = blue;
     }
 

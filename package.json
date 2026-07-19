@@ -8,15 +8,20 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "server": "node function/tessellate_geojson.js"
+    "server": "node function/tessellate_geojson.js",
+    "rag": "node function/rag_server.js"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
     "cli-progress": "^3.12.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
     "earcut": "^3.0.2",
+    "express": "^5.2.1",
     "fs": "^0.0.1-security",
     "gl-matrix": "^3.4.4",
     "h3-js": "^4.4.0",
+    "openai": "^6.48.0",
     "stream-chain": "^3.4.0",
     "stream-json": "^1.9.1",
     "ws": "^8.19.0"

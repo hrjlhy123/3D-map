@@ -841,6 +841,41 @@ window.updateDashboardFromZoom = (zoom, force = false) => {
   donutChart.data.datasets[0].data = data.donutData;
   donutChart.update();
 };
+
+function showDashboardAfterFirstBuilding(event) {
+  const eventZoom = Number(event?.detail?.zoom);
+
+  const initialZoom = Number.isFinite(eventZoom)
+    ? eventZoom
+    : Number.isFinite(Number(window.__firstBuildingRenderZoom))
+      ? Number(window.__firstBuildingRenderZoom)
+      : 1400;
+
+  // true：强制从初始 0 数据切换到正常数据
+  window.updateDashboardFromZoom(initialZoom, true);
+
+  console.log(
+    "Dashboard displayed after first building started rendering.",
+    {
+      zoom: initialZoom,
+    }
+  );
+}
+
+window.addEventListener(
+  "map:first-building-rendered",
+  showDashboardAfterFirstBuilding,
+  { once: true }
+);
+
+// 防止 map 比 dashboard 更早触发事件
+if (window.__firstBuildingRendered) {
+  showDashboardAfterFirstBuilding({
+    detail: {
+      zoom: window.__firstBuildingRenderZoom,
+    },
+  });
+}
 // updateDashboardFromZoom(DASHBOARD_ZOOM_RANGE.min, true);
 
 // interaction

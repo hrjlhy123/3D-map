@@ -7,6 +7,11 @@ let canvas, ready = {
     stream: false,
     buildings: false
 }
+
+window.currentMapBbox = null;
+window.currentCameraDistanceMeters = null;
+window.selectedBuilding = null;
+
 window.addEventListener(`DOMContentLoaded`, async () => {
     /* == Initialization == */
     let context, adapter, device, format_canvas, alphaMode
@@ -373,10 +378,21 @@ window.addEventListener(`DOMContentLoaded`, async () => {
         maxLat: null
     }
 
+    const buildingContextByGpuId = new Map();
+
     // const ws = new WebSocket("ws://localhost:8080")
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const appBasePath = window.location.pathname.startsWith("/3D-map/") ? "/3D-map" : "";
-    const ws = new WebSocket(`${wsProtocol}//${window.location.host}${appBasePath}/ws`);
+    // const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    // const appBasePath = window.location.pathname.startsWith("/3D-map/") ? "/3D-map" : "";
+    // const ws = new WebSocket(`${wsProtocol}//${window.location.host}${appBasePath}/ws`);
+    const isLocal =
+        window.location.hostname === "localhost" ||
+        window.location.hostname === "127.0.0.1";
+
+    const wsUrl = isLocal
+        ? "ws://127.0.0.1:8080"
+        : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+
+    const ws = new WebSocket(wsUrl);
     {
         /* === Model Data === */
         // fetch data (websocket)
@@ -789,6 +805,26 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
                 const building = GPUResources.data.pending.shift()
 
+                const rawCoordinates =
+                    building?.parts?.[0]?.data ?? [];
+
+                let buildingLongitude = null;
+                let buildingLatitude = null;
+
+                if (rawCoordinates.length >= 2) {
+                    let lonSum = 0;
+                    let latSum = 0;
+                    const pointCount = Math.floor(rawCoordinates.length / 2);
+
+                    for (let i = 0; i < pointCount; i++) {
+                        lonSum += Number(rawCoordinates[i * 2]);
+                        latSum += Number(rawCoordinates[i * 2 + 1]);
+                    }
+
+                    buildingLongitude = lonSum / pointCount;
+                    buildingLatitude = latSum / pointCount;
+                }
+
                 // flat/extrude
                 if (BUILDING_MODE === "flat") {
                     building.parts = building.parts.map(p => part_flat(p, 0))
@@ -802,6 +838,33 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 // console.log(`building:`, building)
                 // console.log("building.id =", building?.id);
                 const id_building = id_building_get_create(key_building)
+
+                buildingContextByGpuId.set(id_building, {
+                    buildingId: key_building,
+                    gpuId: id_building,
+
+                    osmId: building?.id?.osm ?? null,
+                    h3Cell: building?.id?.h3 ?? null,
+
+                    longitude: buildingLongitude,
+                    latitude: buildingLatitude,
+
+                    propertyType:
+                        building?.properties?.building ??
+                        building?.properties?.type ??
+                        building?.properties?.["building:use"] ??
+                        null,
+
+                    heightMeters:
+                        building?.parts?.[0]?.meta?.height ??
+                        building?.height ??
+                        null,
+
+                    neighborhood:
+                        building?.properties?.neighborhood ??
+                        building?.properties?.neighbourhood ??
+                        null
+                });
 
                 for (const part of building.parts) {
                     // const idArray = new Uint32Array(part.meta.vertexCount)
@@ -842,9 +905,31 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                 stats.processed++;
             }
 
-            if (!ready.buildings) {
-                ready.buildings = true
-                console.log(`Start rendering!`)
+            if (
+                !ready.buildings &&
+                stats.processed > 0 &&
+                GPUResources.data.rendering.indexByteOffset > 0
+            ) {
+                ready.buildings = true;
+
+                console.log("Start rendering first building!");
+
+                const initialZoom = Number.isFinite(Number(window.zoom))
+                    ? Number(window.zoom)
+                    : 1400;
+
+                // 保存状态，防止 dashboard.js 尚未完成加载
+                window.__firstBuildingRendered = true;
+                window.__firstBuildingRenderZoom = initialZoom;
+
+                window.dispatchEvent(
+                    new CustomEvent("map:first-building-rendered", {
+                        detail: {
+                            zoom: initialZoom,
+                            processedBuildings: stats.processed,
+                        },
+                    })
+                );
             }
         }
 
@@ -962,6 +1047,8 @@ window.addEventListener(`DOMContentLoaded`, async () => {
                     minLat: lat0 - halfLat * SAFETY,
                     maxLat: lat0 + halfLat * SAFETY,
                 };
+
+                window.currentMapBbox = { ...bbox };
 
                 console.log(`bbox:`, bbox);
             }
@@ -1191,6 +1278,9 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             },
             set(v) {
                 _zoom = v;
+
+                window.currentCameraDistanceMeters = Number(v);
+
                 if (v !== zoom_old) {
                     adjust_opacity(v);
                     zoom_old = v;
@@ -2161,13 +2251,20 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             // console.log(`mouseX: ${mouseX}, mouseY: ${mouseY}`)
         })
 
-        let id_selected = 0;
-        const interactionU32 = new Uint32Array(4)
+        let id_hover = 0;
+        let id_clicked = 0;
+
+        const interactionU32 = new Uint32Array(4);
         const hover = async (px, py) => {
             if (GPUResources.data.rendering.indexByteOffset <= 0) {
-                id_selected = 0;
-                device.queue.writeBuffer(GPUResources.buffer.interaction, 0, new Uint32Array([id_selected, 0, 0, 0]));
-                return;
+                id_hover = 0;
+                interactionU32[0] = 0;
+
+                device.queue.writeBuffer(
+                    GPUResources.buffer.interaction,
+                    0,
+                    interactionU32
+                );
             }
 
             const encoder = device.createCommandEncoder()
@@ -2214,14 +2311,42 @@ window.addEventListener(`DOMContentLoaded`, async () => {
             device.queue.submit([encoder.finish()])
             await GPUResources.buffer.hover.mapAsync(GPUMapMode.READ)
             const copy = GPUResources.buffer.hover.getMappedRange(0, 4)
-            id_selected = new Uint32Array(copy)[0] >>> 0
-            GPUResources.buffer.hover.unmap()
-            interactionU32[0] = id_selected;
-            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, interactionU32);
+            id_hover = new Uint32Array(copy)[0] >>> 0;
+            GPUResources.buffer.hover.unmap();
 
-            id_last_hover = id_selected
-            return id_selected
+            // 第一个 u32：hover ID
+            interactionU32[0] = id_hover;
+
+            device.queue.writeBuffer(
+                GPUResources.buffer.interaction,
+                0,
+                interactionU32
+            );
+
+            id_last_hover = id_hover;
+            return id_hover;
         }
+
+        canvas.addEventListener("click", () => {
+            id_clicked = id_last_hover;
+
+            // 第二个 u32：selected ID
+            interactionU32[1] = id_clicked;
+
+            device.queue.writeBuffer(
+                GPUResources.buffer.interaction,
+                0,
+                interactionU32
+            );
+
+            window.selectedBuilding =
+                buildingContextByGpuId.get(id_clicked) ?? null;
+
+            console.log(
+                "Selected building:",
+                window.selectedBuilding
+            );
+        });
 
         window.interaction = async (time) => {
 
@@ -2236,10 +2361,14 @@ window.addEventListener(`DOMContentLoaded`, async () => {
 
             const id = await hover(px, py)
 
-            const data_interaction = new Uint32Array(4)
-            data_interaction[0] = id
-            // console.log(`id: ${id}`)
-            device.queue.writeBuffer(GPUResources.buffer.interaction, 0, data_interaction)
+            interactionU32[0] = id;
+
+            // 不修改 interactionU32[1]，保留点击选择
+            device.queue.writeBuffer(
+                GPUResources.buffer.interaction,
+                0,
+                interactionU32
+            );
         }
     }
 
@@ -2394,6 +2523,15 @@ IndexMB: ${indexMB} MB`
             requestAnimationFrame(frame)
         }
     })
+
+    // 页面进入后，模拟点击 Start 按钮
+    if (ws.readyState === WebSocket.OPEN) {
+        btn.click();
+    } else {
+        ws.addEventListener("open", () => {
+            btn.click();
+        }, { once: true });
+    }
 
     document.getElementById("stopBtn").onclick = () => {
         ws.send(JSON.stringify({ type: "stop" }))

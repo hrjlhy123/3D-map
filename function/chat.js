@@ -613,22 +613,68 @@ function createMediaNode(file) {
     return media;
 }
 
-function appendMessage({ direction = "outgoing", text = "", files = [], dashboardCards = [] }) {
+// function appendMessage({ direction = "outgoing", text = "", files = [], dashboardCards = [] }) {
+//     const row = document.createElement("div");
+//     row.className = `row ${direction}`;
+
+//     const bubble = document.createElement("div");
+//     bubble.className = "bubble";
+
+//     if (text) {
+//         const textEl = document.createElement("div");
+//         textEl.className = "message-text";
+//         textEl.textContent = text;
+//         bubble.appendChild(textEl);
+//     }
+
+//     dashboardCards.forEach((card) => {
+//         bubble.appendChild(createDashboardCardBubbleNode(card));
+//     });
+
+//     files.forEach((file) => {
+//         bubble.appendChild(createMediaNode(file));
+//     });
+
+//     const timeEl = document.createElement("div");
+//     timeEl.className = "time";
+
+//     if (direction === "outgoing") {
+//         timeEl.textContent = `${getNowTimeLabel()} ✓✓`;
+//     } else {
+//         timeEl.textContent = getNowTimeLabel();
+//     }
+
+//     bubble.appendChild(timeEl);
+//     row.appendChild(bubble);
+//     messages.appendChild(row);
+//     messages.scrollTop = messages.scrollHeight;
+// }
+
+function appendMessage({
+    direction = "outgoing",
+    text = "",
+    files = [],
+    dashboardCards = []
+}) {
     const row = document.createElement("div");
     row.className = `row ${direction}`;
 
     const bubble = document.createElement("div");
     bubble.className = "bubble";
 
+    let textEl = null;
+
     if (text) {
-        const textEl = document.createElement("div");
+        textEl = document.createElement("div");
         textEl.className = "message-text";
         textEl.textContent = text;
         bubble.appendChild(textEl);
     }
 
     dashboardCards.forEach((card) => {
-        bubble.appendChild(createDashboardCardBubbleNode(card));
+        bubble.appendChild(
+            createDashboardCardBubbleNode(card)
+        );
     });
 
     files.forEach((file) => {
@@ -639,7 +685,13 @@ function appendMessage({ direction = "outgoing", text = "", files = [], dashboar
     timeEl.className = "time";
 
     if (direction === "outgoing") {
-        timeEl.textContent = `${getNowTimeLabel()} ✓✓`;
+        timeEl.textContent = `${getNowTimeLabel()} `;
+
+        const doubleCheck = document.createElement("span");
+        doubleCheck.className = "double-check";
+        doubleCheck.textContent = "✓✓";
+
+        timeEl.appendChild(doubleCheck);
     } else {
         timeEl.textContent = getNowTimeLabel();
     }
@@ -647,7 +699,15 @@ function appendMessage({ direction = "outgoing", text = "", files = [], dashboar
     bubble.appendChild(timeEl);
     row.appendChild(bubble);
     messages.appendChild(row);
+
     messages.scrollTop = messages.scrollHeight;
+
+    return {
+        row,
+        bubble,
+        textEl,
+        timeEl,
+    };
 }
 
 function clearComposer() {
@@ -661,43 +721,325 @@ function clearComposer() {
     composerInput.focus();
 }
 
-// ===== 最简单的拟人自动回复 =====
-function getFakeReply() {
-    const replies = [
-        "Payment first.",
-        "I’d need payment first.",
-        "Pay first, then I can help.",
-        "Need payment before that.",
-        "I can help after payment.",
-        "Payment comes first.",
-        "That would need payment first.",
-        "Not before payment."
-    ];
+// // ===== 最简单的拟人自动回复 =====
+// function getFakeReply() {
+//     const replies = [
+//         "Payment first.",
+//         "I’d need payment first.",
+//         "Pay first, then I can help.",
+//         "Need payment before that.",
+//         "I can help after payment.",
+//         "Payment comes first.",
+//         "That would need payment first.",
+//         "Not before payment."
+//     ];
 
-    return replies[Math.floor(Math.random() * replies.length)];
+//     return replies[Math.floor(Math.random() * replies.length)];
+// }
+
+// function scheduleFakeReply() {
+//     const delay = 500 + Math.random() * 600;
+
+//     setTimeout(() => {
+//         appendMessage({
+//             direction: "incoming",
+//             text: getFakeReply(),
+//             files: [],
+//         });
+//     }, delay);
+// }
+
+// function sendCurrentMessage() {
+//     const text = getComposerPlainText();
+//     const files = pendingAttachments.map((item) => item.file);
+//     const dashboardCards = pendingDashboardCards.map((item) => item.card);
+
+//     if (!text && files.length === 0 && dashboardCards.length === 0) {
+//         return;
+//     }
+
+//     appendMessage({
+//         direction: "outgoing",
+//         text,
+//         files,
+//         dashboardCards
+//     });
+
+//     clearComposer();
+//     scheduleFakeReply();
+// }
+
+// ===== RAG 自动回复 =====
+// 本地开发使用这个地址。
+// 部署到线上后应改为：const RAG_API_URL = "/api/rag";
+const RAG_API_URL = "http://127.0.0.1:3006/api/rag";
+
+const mapWindow =
+    window.parent !== window
+        ? window.parent
+        : window;
+
+let ragRequestPending = false;
+
+function setRagRequestPending(isPending) {
+    ragRequestPending = isPending;
+    sendBtn.disabled = isPending;
+    sendBtn.setAttribute("aria-busy", String(isPending));
 }
 
-function scheduleFakeReply() {
-    const delay = 500 + Math.random() * 600;
+function toJsonSafeValue(value) {
+    if (value == null) return null;
 
-    setTimeout(() => {
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch (error) {
+        console.warn("Map context could not be serialized:", error);
+        return null;
+    }
+}
+
+async function requestRagReply(text, dashboardCards = [], files = []) {
+    const question =
+        safePlainText(text) ||
+        (dashboardCards.length > 0
+            ? "Please analyze the attached dashboard KPI data."
+            : "Please respond to the user's attached media.");
+
+    setRagRequestPending(true);
+
+    const thinkingMessage = appendMessage({
+        direction: "incoming",
+        text: [
+            "REQUEST ANALYSIS",
+            "Reading your question and live map context..."
+        ].join("\n"),
+        files: [],
+    });
+
+    thinkingMessage.row.classList.add("thinking-row");
+
+    const thinkingTimers = [];
+
+    function updateThinkingMessage(lines) {
+        if (
+            !thinkingMessage.textEl ||
+            !thinkingMessage.textEl.isConnected
+        ) {
+            return;
+        }
+
+        thinkingMessage.textEl.textContent =
+            lines.join("\n");
+
+        messages.scrollTop =
+            messages.scrollHeight;
+    }
+
+    // 第一阶段：后端正在让 OpenAI 判断请求类型
+    thinkingTimers.push(
+        setTimeout(() => {
+            updateThinkingMessage([
+                "CONTEXT EVALUATION",
+                "Checking the selected building, camera, and dashboard context...",
+                "",
+                "Determining whether additional data sources are needed..."
+            ]);
+        }, 1200)
+    );
+
+    // 第二阶段：不声称一定进行了搜索，只说明正在选择来源
+    thinkingTimers.push(
+        setTimeout(() => {
+            updateThinkingMessage([
+                "SOURCE SELECTION",
+                "Choosing the appropriate response path...",
+                "",
+                "Available paths:",
+                "• Direct AI response",
+                "• Local knowledge-base retrieval",
+                "• Local and public web research"
+            ]);
+        }, 3000)
+    );
+
+    // 第三阶段：请求较久时显示安全的通用信息
+    thinkingTimers.push(
+        setTimeout(() => {
+            updateThinkingMessage([
+                "INFORMATION PROCESSING",
+                "Processing the relevant application context and supporting information...",
+                "",
+                "Distinguishing live map data, synthetic demo data, and verified public information."
+            ]);
+        }, 6000)
+    );
+
+    // 第四阶段：表示模型正在形成最终回答
+    thinkingTimers.push(
+        setTimeout(() => {
+            updateThinkingMessage([
+                "RESPONSE SYNTHESIS",
+                "Comparing the available information...",
+                "",
+                "Preparing a clear and source-aware response."
+            ]);
+        }, 10000)
+    );
+
+    // 请求特别久时
+    thinkingTimers.push(
+        setTimeout(() => {
+            updateThinkingMessage([
+                "FINALIZING RESPONSE",
+                "The request requires additional processing time...",
+                "",
+                "Checking the answer for unsupported or conflicting information."
+            ]);
+        }, 18000)
+    );
+
+    function removeThinkingMessage() {
+        thinkingTimers.forEach((timerId) => {
+            clearTimeout(timerId);
+        });
+
+        thinkingTimers.length = 0;
+
+        if (thinkingMessage.row.isConnected) {
+            thinkingMessage.row.remove();
+        }
+    }
+
+    try {
+        console.log(
+            "Sending selected building:",
+            mapWindow.selectedBuilding
+        );
+        const response = await fetch(RAG_API_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                question,
+
+                dashboardContext: {
+                    cards: dashboardCards,
+                },
+
+                mapContext: {
+                    bbox: toJsonSafeValue(
+                        mapWindow.currentMapBbox
+                    ),
+
+                    camera: {
+                        distanceMeters: Number.isFinite(
+                            Number(mapWindow.currentCameraDistanceMeters)
+                        )
+                            ? Number(mapWindow.currentCameraDistanceMeters)
+                            : null,
+
+                        pitchRadians: Number.isFinite(
+                            Number(mapWindow.pitch)
+                        )
+                            ? Number(mapWindow.pitch)
+                            : null,
+
+                        zoomType: "camera-distance",
+                        distanceMeaning:
+                            "Larger values mean farther from the map; smaller values mean closer."
+                    },
+
+                    selectedBuilding: toJsonSafeValue(
+                        mapWindow.selectedBuilding
+                    ),
+                },
+
+                // 目前只发送附件信息，不发送图片或视频本身
+                attachments: files.map((file) => ({
+                    name: file.name,
+                    type: file.type,
+                    size: file.size,
+                })),
+            }),
+        });
+
+        let result;
+
+        try {
+            result = await response.json();
+        } catch {
+            throw new Error(
+                `RAG server returned HTTP ${response.status}.`
+            );
+        }
+
+        if (!response.ok) {
+            throw new Error(
+                result.error ||
+                `RAG request failed (${response.status}).`
+            );
+        }
+
+        // const answer = safePlainText(result.answer);
+
+        // appendMessage({
+        //     direction: "incoming",
+        //     text: answer || "The GIS assistant returned an empty response.",
+        //     files: [],
+        // });
+
+        const answer = safePlainText(result.answer);
+
+        removeThinkingMessage();
+
         appendMessage({
             direction: "incoming",
-            text: getFakeReply(),
+            text:
+                answer ||
+                "The GIS assistant returned an empty response.",
             files: [],
         });
-    }, delay);
+    } catch (error) {
+        console.error("RAG request failed:", error);
+
+        removeThinkingMessage();
+
+        appendMessage({
+            direction: "incoming",
+            text:
+                `The request failed: ${error.message}`,
+            files: [],
+        });
+    } finally {
+        removeThinkingMessage();
+
+        setRagRequestPending(false);
+        composerInput.focus();
+    }
 }
 
 function sendCurrentMessage() {
-    const text = getComposerPlainText();
-    const files = pendingAttachments.map((item) => item.file);
-    const dashboardCards = pendingDashboardCards.map((item) => item.card);
-
-    if (!text && files.length === 0 && dashboardCards.length === 0) {
+    // AI 还在回复时，避免用户重复提交
+    if (ragRequestPending) {
         return;
     }
 
+    const text = getComposerPlainText();
+    const files = pendingAttachments.map((item) => item.file);
+    const dashboardCards = pendingDashboardCards.map(
+        (item) => item.card
+    );
+
+    if (
+        !text &&
+        files.length === 0 &&
+        dashboardCards.length === 0
+    ) {
+        return;
+    }
+
+    // 先显示用户发送的消息
     appendMessage({
         direction: "outgoing",
         text,
@@ -705,8 +1047,11 @@ function sendCurrentMessage() {
         dashboardCards
     });
 
+    // 再清空输入框
     clearComposer();
-    scheduleFakeReply();
+
+    // 将刚才保存的 text、dashboardCards 发送给 RAG
+    void requestRagReply(text, dashboardCards, files);
 }
 
 sendBtn.addEventListener("click", sendCurrentMessage);

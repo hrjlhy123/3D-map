@@ -4,3 +4,6 @@ data_new/
 data_seattle/
 data_hex_tiles/
 data_hex_tiles.zip
+
+.env
+.env.*
