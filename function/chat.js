@@ -816,9 +816,15 @@ function clearComposer() {
 // }
 
 // ===== RAG 自动回复 =====
-// 本地开发使用这个地址。
-// 部署到线上后应改为：const RAG_API_URL = "/api/rag";
-const RAG_API_URL = "http://127.0.0.1:3007/api/rag";
+const isLocalDevelopment =
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1";
+
+const RAG_API_URL = isLocalDevelopment
+    ? "http://127.0.0.1:3007/api/rag"
+    : "/3D-map/api/rag";
+
+console.log("[RAG] API URL:", RAG_API_URL);
 
 const mapWindow =
     window.parent !== window
